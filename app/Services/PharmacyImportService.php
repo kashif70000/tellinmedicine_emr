@@ -165,6 +165,7 @@ class PharmacyImportService
      * 1. Match by google_place_id if present.
      * 2. Match by normalized name + street_address + city + state + postal_code.
      * 3. Fallback: match by normalized name + street_address + city + state when address exists.
+     * 4. Strict Fallback: match by normalized name + city + state if either address is missing.
      */
     public function findExistingPharmacy(array $data): ?Pharmacy
     {
@@ -176,19 +177,40 @@ class PharmacyImportService
             }
         }
 
-        // 2. Compound identity: name + street_address + city + state + postal_code
-        if (!empty($data['name']) && !empty($data['street_address']) && !empty($data['city']) && !empty($data['state'])) {
-            $query = Pharmacy::where('city', $data['city'])
-                ->where('state', $data['state']);
+        if (empty($data['name']) || empty($data['city']) || empty($data['state'])) {
+            return null;
+        }
 
-            // Fetch candidate pharmacies in the same city/state
-            $candidates = $query->get();
+        // Fetch candidate pharmacies in the same city/state
+        $candidates = Pharmacy::where('city', $data['city'])->where('state', $data['state'])->get();
 
-            foreach ($candidates as $candidate) {
+        $incomingNameNormalized = $this->normalizeStringForComparison($data['name']);
+        $incomingBrandNormalized = $this->normalizeBrandForComparison($data['name']);
+
+        foreach ($candidates as $candidate) {
+            $candidateNameNormalized = $this->normalizeStringForComparison($candidate->name);
+            $candidateBrandNormalized = $this->normalizeBrandForComparison($candidate->name);
+
+            $nameMatches = ($candidateNameNormalized === $incomingNameNormalized);
+            if (!$nameMatches && !empty($candidateBrandNormalized) && !empty($incomingBrandNormalized)) {
+                if ($candidateBrandNormalized === $incomingBrandNormalized) {
+                    $nameMatches = true;
+                }
+            }
+
+            if (!$nameMatches) {
+                continue;
+            }
+
+            // If both have street addresses, use standard validation
+            if (!empty($candidate->street_address) && !empty($data['street_address'])) {
                 if ($this->isSamePharmacy($candidate, $data)) {
                     return $candidate;
                 }
+                continue;
             }
+            // Fallback: If either lacks a street address, match strictly on name + city + state to prevent duplicates
+            return $candidate;
         }
 
         return null;
@@ -588,7 +610,7 @@ class PharmacyImportService
             'dollar general', 'dollar tree', 'family dollar', '99 cents', 'five below',
             'ulta beauty', 'sephora', 'sally beauty', 'cosmetics', 'beauty supply', 'nail salon', 'hair salon', 'barber',
             'dispensary', 'cannabis', 'marijuana', 'weed', 'cbd store', 'smoke shop', 'vape shop', 'hookah',
-            'cumberland farms', '7-eleven', 'circle k', 'wawa', 'sheetz', 'speedway', 'gas station', 'convenience store', 'pick n pay',
+            'cumberland farms', '7-eleven', 'circle k', 'wawa', 'sheetz', 'speedway', 'gas station', 'convenience store',
             'minuteclinic', 'urgent care', 'covid-19 drive-thru', 'covid-19 testing', 'testing site',
             'optometry', 'eyecare', 'vision center', 'dentist', 'dental', 'veterinary', 'animal hospital'
         ];
@@ -624,8 +646,24 @@ class PharmacyImportService
             }
         }
 
-        // Positive check: Must contain pharmacy keyword in name or category
+        // Positive check: Must contain pharmacy/medical keyword in name or category
         if (self::hasPharmacyKeyword($n) || self::hasPharmacyKeyword($cat)) {
+            return true;
+        }
+
+        // Positive check: If category indicates health/medical/hospital/clinic
+        $healthcareCategories = [
+            'health', 'medical', 'hospital', 'clinic', 'healthcare', 'doctor', 'healthcare service'
+        ];
+        foreach ($healthcareCategories as $hc) {
+            if (str_contains($cat, $hc)) {
+                return true;
+            }
+        }
+
+        // Fallback: If category is empty or generic, permit it as long as it passed the exclusion list
+        $genericCategories = ['', 'store', 'establishment', 'point of interest', 'local service'];
+        if (in_array($cat, $genericCategories, true)) {
             return true;
         }
 
@@ -645,6 +683,9 @@ class PharmacyImportService
                str_contains($lower, 'chemist') ||
                str_contains($lower, 'apothecary') ||
                str_contains($lower, 'medical store') ||
+               str_contains($lower, 'medicos') ||
+               str_contains($lower, 'medico') ||
+               str_contains($lower, 'medicines') ||
                str_contains($lower, 'farmacia') ||
                str_contains($lower, 'prescription') ||
                str_contains($lower, ' rx') ||
@@ -690,5 +731,3 @@ class PharmacyImportService
         return in_array($lower, $countries, true);
     }
 }
-
-

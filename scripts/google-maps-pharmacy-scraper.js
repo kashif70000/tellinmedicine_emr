@@ -1,4 +1,18 @@
 #!/usr/bin/env node
+import { chromium } from 'playwright';
+
+const rawCity = process.argv[2] ? process.argv[2].trim() : 'Lowell';
+const rawState = process.argv[3] ? process.argv[3].trim() : 'Massachusetts';
+const rawLimit = process.argv[4] ? process.argv[4].trim() : null;
+
+const city = rawCity;
+const state = rawState;
+const limit = (rawLimit && rawLimit !== '0') ? parseInt(rawLimit, 10) : null;
+const isUnlimited = (limit === null);
+
+const log = (...args) => console.error('[PharmacyScraper]', ...args);
+function outputJson(data) { process.stdout.write(JSON.stringify(data)); }
+#!/usr/bin/env node
 /**
  * Google Maps Pharmacy Scraper using Playwright
  * 
@@ -1032,6 +1046,65 @@ async function run() {
                 stop_reason: 'scraper_error'
             }
         });
+    }
+}
+
+run();
+
+async function run() {
+    log(`Launching scraper for "${city}, ${state}"`);
+    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+
+    try {
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        });
+        const page = await context.newPage();
+        const candidateMap = new Map();
+
+        const searchUrl = `https://www.google.com/maps/search/pharmacies+in+${encodeURIComponent(city)}+${encodeURIComponent(state)}?hl=en`;
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(3000);
+
+        let scrolls = 0;
+        while (scrolls < 12) {
+            scrolls++;
+            const cards = await page.$$('div[role="article"], div.Nv2PK');
+
+            for (const card of cards) {
+                try {
+                    const nameEl = await card.$('div.fontHeadlineSmall, div.qBF1Pd, [role="heading"]');
+                    const name = nameEl ? (await nameEl.innerText()).trim() : null;
+                    if (!name || name.length < 2) continue;
+
+                    const linkEl = await card.$('a[href*="/maps/place/"], a.hfpxzc');
+                    const href = linkEl ? await linkEl.getAttribute('href') : null;
+
+                    const key = name.toLowerCase();
+                    if (!candidateMap.has(key)) {
+                        candidateMap.set(key, {
+                            name,
+                            city,
+                            state,
+                            street_address: null,
+                            phone: null,
+                            website: null,
+                            external_source_url: href
+                        });
+                    }
+                } catch (e) { }
+            }
+
+            await page.evaluate(() => window.scrollBy(0, 2000));
+            await page.waitForTimeout(1000);
+            if (!isUnlimited && candidateMap.size >= limit) break;
+        }
+
+        outputJson({ status: 'success', results: Array.from(candidateMap.values()), stop_reason: 'completed' });
+        await browser.close();
+    } catch (err) {
+        outputJson({ status: 'error', results: [], message: err.message });
+        if (browser) await browser.close();
     }
 }
 

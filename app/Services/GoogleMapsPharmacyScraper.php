@@ -3,8 +3,8 @@
 namespace App\Services;
 
 use App\Services\Contracts\PharmacyScraperInterface;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Symfony\Component\Process\Process;
 use Throwable;
 
 class GoogleMapsPharmacyScraper implements PharmacyScraperInterface
@@ -12,389 +12,381 @@ class GoogleMapsPharmacyScraper implements PharmacyScraperInterface
     protected ?string $lastStopReason = null;
     protected ?array $lastMeta = null;
 
-    /**
-     * Get the stop reason from the last scraping run.
-     */
     public function getLastStopReason(): ?string
     {
         return $this->lastStopReason;
     }
 
-    /**
-     * Get metadata from the last scraping run.
-     */
     public function getLastMeta(): ?array
     {
         return $this->lastMeta;
     }
 
-    /**
-     * Search and scrape pharmacy listings for the specified city and state.
-     *
-     * @param string $city
-     * @param string $state
-     * @param int|null $limit
-     * @return array<int, array<string, mixed>>
-     */
     public function search(string $city, string $state, ?int $limit = null): array
     {
         $this->lastStopReason = null;
         $this->lastMeta = null;
 
-        $scriptPath = base_path('scripts/google-maps-pharmacy-scraper.js');
-        $nodeBinary = $this->findNodeBinary();
+        $maxLimit = ($limit !== null && $limit > 0) ? $limit : 2000;
+        $results = [];
+        $seen = [];
 
-        if (file_exists($scriptPath)) {
-            // '0' indicates unlimited to the node scraper
-            $limitArg = ($limit !== null && $limit > 0) ? (string) $limit : '0';
-            $command = [$nodeBinary, $scriptPath, $city, $state, $limitArg];
+        $userAgent = 'PDMS-Healthcare-System/1.0 (healthcare@pdms.org)';
 
-            try {
-                $process = new Process($command, base_path(), $this->getProcessEnvironment(), null, 180);
-                $process->run();
+        $http = fn() => Http::withHeaders([
+            'User-Agent' => $userAgent,
+            'Accept'     => 'application/json',
+        ]);
 
-                $output = trim($process->getOutput());
-                $errorOutput = trim($process->getErrorOutput());
+        // ---------------------------------------------------------------------
+        // 1. RESOLVE CITY CENTER (Nominatim Geocoding API)
+        // ---------------------------------------------------------------------
+        $centerLat = null;
+        $centerLon = null;
 
-                if (!empty($errorOutput)) {
-                    Log::debug("Google Maps Playwright scraper stderr: {$errorOutput}");
+        try {
+            $res = $http()->timeout(10)->get('https://nominatim.openstreetmap.org/search', [
+                'q'      => "{$city}, {$state}",
+                'format' => 'json',
+                'limit'  => 1,
+            ]);
+
+            if ($res->successful() && !empty($res->json())) {
+                $centerLat = (float) $res->json()[0]['lat'];
+                $centerLon = (float) $res->json()[0]['lon'];
+                Log::info("DEBUG [Geocode]: Resolved {$city}, {$state} to Center [{$centerLat}, {$centerLon}]");
+            }
+        } catch (Throwable $e) {
+            Log::error('DEBUG [Geocode Exception]: ' . $e->getMessage());
+        }
+
+        if (!$centerLat || !$centerLon) {
+            $this->lastStopReason = 'could_not_resolve_city_coordinates';
+            $this->lastMeta = ['total_found' => 0];
+            return [];
+        }
+
+        // ---------------------------------------------------------------------
+        // 2. UNIVERSAL PROCESSOR & ADDITION HELPER
+        // ---------------------------------------------------------------------
+        $processApiSource = function (string $sourceName, iterable $items) use (&$results, &$seen, $maxLimit, $city, $state) {
+            $rawFetched = 0;
+            $uniqueAdded = 0;
+
+            foreach ($items as $item) {
+                $rawFetched++;
+
+                $name = trim($item['name'] ?? '');
+                $street = trim($item['street'] ?? '');
+                $postal = trim($item['postal'] ?? '');
+                $phone = trim($item['phone'] ?? '');
+                $website = trim($item['website'] ?? '');
+                $lat = $item['lat'] ?? null;
+                $lon = $item['lon'] ?? null;
+                $placeId = $item['place_id'] ?? null;
+
+                if (strlen($name) < 2 || in_array(strtolower($name), ['pharmacy', 'chemist', 'drugstore'])) {
+                    continue;
                 }
 
-                if (!empty($output)) {
-                    $data = json_decode($output, true);
-                    if (is_array($data)) {
-                        $this->lastStopReason = $data['stop_reason'] ?? ($data['meta']['stop_reason'] ?? null);
-                        $this->lastMeta = $data['meta'] ?? [];
+                $cleanName = preg_replace('/[^a-z0-9]/', '', strtolower($name));
+                $key = $cleanName . '|' . ($lat ? round((float)$lat, 4) : 'x') . '|' . ($lon ? round((float)$lon, 4) : 'x');
+                
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
 
-                        $rawResults = $data['results'] ?? [];
-                        $validResults = [];
-                        foreach ($rawResults as $item) {
-                            if (is_array($item) && !empty($item['name']) && $this->isValidBusinessName($item['name'], $city, $state) && $this->isStrictPharmacy($item['category'] ?? null, $item['name'])) {
-                                $validResults[] = $item;
-                            }
-                        }
+                if (count($results) >= $maxLimit) {
+                    break;
+                }
 
-                        if (!empty($validResults)) {
-                            return $validResults;
-                        }
+                $results[] = [
+                    'name'                => $name,
+                    'street_address'      => $street ?: null,
+                    'city'                => ucwords(strtolower($city)),
+                    'state'               => ucwords(strtolower($state)),
+                    'postal_code'         => $postal ?: null,
+                    'phone'               => $phone ?: null,
+                    'website'             => $website ?: null,
+                    'latitude'            => $lat !== null ? (float) $lat : null,
+                    'longitude'           => $lon !== null ? (float) $lon : null,
+                    'google_place_id'     => $placeId,
+                    'source'              => $sourceName,
+                    'external_source_url' => $website ?: null,
+                ];
+                $uniqueAdded++;
+            }
 
-                        // If Playwright ran and was challenged by Google, or found 0
-                        $savedMeta = $this->lastMeta;
-                        $savedStopReason = $this->lastStopReason;
-                        $fallback = $this->fetchFromWorldwideDirectory($city, $state, $limit);
-                        if (!empty($fallback)) {
-                            return $fallback;
-                        }
+            Log::info("DEBUG [API Summary - {$sourceName}] => Raw Fetched: {$rawFetched} | Unique Added: {$uniqueAdded}");
+        };
 
-                        $this->lastStopReason = $savedStopReason ?: 'no_listings_found_in_target_location';
-                        $this->lastMeta = $savedMeta;
-                        return [];
+        // ---------------------------------------------------------------------
+        // 3. FOURSQUARE PLACES API v3
+        // ---------------------------------------------------------------------
+        $fsqKey = env('FOURSQUARE_API_KEY');
+        if ($fsqKey) {
+            try {
+                $res = Http::withHeaders([
+                    'Authorization' => trim($fsqKey),
+                    'Accept'        => 'application/json',
+                ])->timeout(12)->get('https://api.foursquare.com/v3/places/search', [
+                    'll'     => "{$centerLat},{$centerLon}",
+                    'query'  => 'pharmacy',
+                    'radius' => 30000,
+                    'limit'  => 50,
+                ]);
+
+                if ($res->successful()) {
+                    $items = [];
+                    foreach ($res->json('results') ?? [] as $fsq) {
+                        $loc = $fsq['location'] ?? [];
+                        $geos = $fsq['geocodes']['main'] ?? [];
+                        $items[] = [
+                            'name'    => $fsq['name'] ?? null,
+                            'street'  => $loc['address'] ?? null,
+                            'postal'  => $loc['postcode'] ?? null,
+                            'phone'   => $fsq['tel'] ?? null,
+                            'website' => $fsq['website'] ?? null,
+                            'lat'     => $geos['latitude'] ?? null,
+                            'lon'     => $geos['longitude'] ?? null,
+                        ];
                     }
+                    $processApiSource('foursquare', $items);
+                } else {
+                    Log::warning("DEBUG [Foursquare Failed]: Status " . $res->status() . " - Body: " . $res->body());
                 }
             } catch (Throwable $e) {
-                Log::warning("Primary scraper failed, falling back to worldwide directory: " . $e->getMessage(), [
-                    'city' => $city,
-                    'state' => $state,
+                Log::error("DEBUG [Foursquare Exception]: " . $e->getMessage());
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // 4. MAPBOX SEARCH & GEOCODING API
+        // ---------------------------------------------------------------------
+        $mapboxKey = env('MAPBOX_ACCESS_TOKEN');
+        if ($mapboxKey) {
+            try {
+                $res = $http()->timeout(10)->get("https://api.mapbox.com/search/geocode/v6/forward", [
+                    'q'            => "pharmacy {$city}",
+                    'access_token' => $mapboxKey,
+                    'proximity'    => "{$centerLon},{$centerLat}",
+                    'limit'        => 20,
                 ]);
-            }
-        }
 
-        // Fallback to high-reliability worldwide directory search
-        return $this->fetchFromWorldwideDirectory($city, $state, $limit);
-    }
+                if ($res->successful()) {
+                    $mapboxItems = [];
+                    foreach ($res->json('features') ?? [] as $feature) {
+                        $coords = $feature['geometry']['coordinates'] ?? [null, null];
+                        $props = $feature['properties'] ?? [];
+                        $featureType = $props['feature_type'] ?? '';
+                        $name = $props['name'] ?? ($props['place_name'] ?? '');
 
-    /**
-     * Build process environment with mandatory Windows system variables.
-     * Prevents Node.js Assertion failed: ncrypto::CSPRNG(nullptr, 0) in Apache/PHP-FPM web runtime.
-     *
-     * @return array<string, string>
-     */
-    protected function getProcessEnvironment(): array
-    {
-        $env = [];
-        foreach ($_SERVER as $k => $v) {
-            if (is_string($v)) {
-                $env[$k] = $v;
-            }
-        }
-        foreach ($_ENV as $k => $v) {
-            if (is_string($v)) {
-                $env[$k] = $v;
-            }
-        }
-
-        $systemRoot = getenv('SystemRoot') ?: (getenv('WINDIR') ?: 'C:\\Windows');
-        $env['SystemRoot'] = $systemRoot;
-        $env['WINDIR'] = $systemRoot;
-        $env['PATH'] = getenv('PATH') ?: "{$systemRoot}\\system32;{$systemRoot};C:\\Program Files\\nodejs";
-        $env['TEMP'] = sys_get_temp_dir();
-        $env['TMP'] = sys_get_temp_dir();
-
-        $userProfile = getenv('USERPROFILE') ?: ((getenv('HOMEDRIVE') ?: 'C:') . (getenv('HOMEPATH') ?: '\\Users\\DELL'));
-        $env['USERPROFILE'] = $userProfile;
-        $env['LOCALAPPDATA'] = getenv('LOCALAPPDATA') ?: "{$userProfile}\\AppData\\Local";
-        $env['APPDATA'] = getenv('APPDATA') ?: "{$userProfile}\\AppData\\Roaming";
-
-        return $env;
-    }
-
-    /**
-     * Resolve the appropriate node executable.
-     */
-    protected function findNodeBinary(): string
-    {
-        $candidates = [
-            'C:\\Program Files\\nodejs\\node.exe',
-            'C:\\Program Files (x86)\\nodejs\\node.exe',
-            'D:\\laragon\\bin\\nodejs\\node.exe',
-        ];
-
-        foreach ($candidates as $bin) {
-            if (file_exists($bin)) {
-                return $bin;
-            }
-        }
-
-        return 'node';
-    }
-
-    /**
-     * High-reliability multi-source worldwide directory search for pharmacies.
-     *
-     * @param string $city
-     * @param string $state
-     * @param int|null $limit
-     * @return array<int, array<string, mixed>>
-     */
-    protected function fetchFromWorldwideDirectory(string $city, string $state, ?int $limit = null): array
-    {
-        $maxLimit = ($limit !== null && $limit > 0) ? $limit : 150;
-        $results = [];
-        $seenNames = [];
-
-        // 1. Geocode location with Nominatim to get lat/lon and bounding box
-        $lat = null;
-        $lon = null;
-        $bbox = null;
-
-        try {
-            $geoUrl = "https://nominatim.openstreetmap.org/search?q=" . urlencode("{$city}, {$state}") . "&format=json&limit=1";
-            $geoRes = \Illuminate\Support\Facades\Http::timeout(8)
-                ->withHeaders(['User-Agent' => 'PDMS-Healthcare-System/1.0 (healthcare@pdms.org)'])
-                ->get($geoUrl);
-
-            if ($geoRes->successful() && !empty($geoRes->json())) {
-                $geoData = $geoRes->json()[0] ?? null;
-                $lat = isset($geoData['lat']) ? (float) $geoData['lat'] : null;
-                $lon = isset($geoData['lon']) ? (float) $geoData['lon'] : null;
-                $bbox = $geoData['boundingbox'] ?? null;
-            }
-        } catch (Throwable $e) {
-            Log::warning("Pharmacy geocoding failed: " . $e->getMessage());
-        }
-
-        // 2. Overpass API query (using 50km radius around city coordinates)
-        if ($lat !== null && $lon !== null) {
-            $overpassServers = [
-                'https://overpass-api.de/api/interpreter',
-                'https://overpass.kumi.systems/api/interpreter',
-            ];
-
-            $overpassQuery = "[out:json][timeout:25];(node[\"amenity\"=\"pharmacy\"](around:50000,{$lat},{$lon});way[\"amenity\"=\"pharmacy\"](around:50000,{$lat},{$lon});node[\"healthcare\"=\"pharmacy\"](around:50000,{$lat},{$lon});way[\"healthcare\"=\"pharmacy\"](around:50000,{$lat},{$lon});node[\"shop\"=\"chemist\"](around:50000,{$lat},{$lon});way[\"shop\"=\"chemist\"](around:50000,{$lat},{$lon});node[\"amenity\"~\"pharmacy|chemist|clinic\"][\"name\"~\"Pharmacy|Chemist|Medical Store|Medicos|Fazal Din|Servaid|Clinix|Walgreens|CVS|Rite Aid\",i](around:50000,{$lat},{$lon}););out center {$maxLimit};";
-
-            foreach ($overpassServers as $serverUrl) {
-                try {
-                    $opRes = \Illuminate\Support\Facades\Http::timeout(12)
-                        ->asForm()
-                        ->post($serverUrl, ['data' => $overpassQuery]);
-
-                    if ($opRes->successful()) {
-                        $elements = $opRes->json('elements') ?? [];
-                        foreach ($elements as $el) {
-                            $tags = $el['tags'] ?? [];
-                            $name = $tags['name'] ?? ($tags['operator'] ?? ($tags['brand'] ?? null));
-
-                            if (!$name || !$this->isValidBusinessName($name, $city, $state)) {
-                                continue;
-                            }
-
-                            $lowerName = strtolower(trim($name));
-                            if (isset($seenNames[$lowerName])) {
-                                continue;
-                            }
-                            $seenNames[$lowerName] = true;
-
-                            $streetNumber = $tags['addr:housenumber'] ?? '';
-                            $streetName = $tags['addr:street'] ?? '';
-                            $street = trim("{$streetNumber} {$streetName}");
-
-                            $phone = $tags['phone'] ?? ($tags['contact:phone'] ?? null);
-                            $website = $tags['website'] ?? ($tags['contact:website'] ?? null);
-                            $postal = $tags['addr:postcode'] ?? null;
-                            $elLat = $el['lat'] ?? ($el['center']['lat'] ?? null);
-                            $elLng = $el['lon'] ?? ($el['center']['lon'] ?? null);
-
-                            $results[] = [
-                                'name' => $name,
-                                'street_address' => $street ?: null,
-                                'city' => $tags['addr:city'] ?? $city,
-                                'state' => $tags['addr:state'] ?? $state,
-                                'postal_code' => $postal,
-                                'phone' => $phone,
-                                'website' => $website,
-                                'latitude' => $elLat,
-                                'longitude' => $elLng,
-                                'google_place_id' => null,
-                                'source' => 'live_directory',
-                                'external_source_url' => $website,
-                            ];
-
-                            if (count($results) >= $maxLimit) {
-                                break 2;
-                            }
-                        }
-
-                        if (!empty($results)) {
-                            break;
-                        }
-                    }
-                } catch (Throwable $e) {
-                    Log::warning("Overpass server {$serverUrl} failed: " . $e->getMessage());
-                }
-            }
-        }
-
-        if (!empty($results)) {
-            $this->lastStopReason = (count($results) >= $maxLimit) ? 'requested_limit_reached' : 'end_of_results_reached';
-            return $results;
-        }
-
-        // 3. Nominatim Structured & Brand Searches
-        try {
-            $searchEndpoints = [
-                "https://nominatim.openstreetmap.org/search?amenity=pharmacy&city=" . urlencode($city) . "&state=" . urlencode($state) . "&format=json&addressdetails=1&limit={$maxLimit}",
-                "https://nominatim.openstreetmap.org/search?q=" . urlencode("pharmacy {$city} {$state}") . "&format=json&addressdetails=1&limit={$maxLimit}",
-                "https://nominatim.openstreetmap.org/search?q=" . urlencode("CVS {$city} {$state}") . "&format=json&addressdetails=1&limit=20",
-                "https://nominatim.openstreetmap.org/search?q=" . urlencode("Walgreens {$city} {$state}") . "&format=json&addressdetails=1&limit=20",
-            ];
-
-            foreach ($searchEndpoints as $searchUrl) {
-                $searchRes = \Illuminate\Support\Facades\Http::timeout(10)
-                    ->withHeaders(['User-Agent' => 'PDMS-Healthcare-System/1.0 (healthcare@pdms.org)'])
-                    ->get($searchUrl);
-
-                if ($searchRes->successful()) {
-                    $items = $searchRes->json() ?? [];
-                    foreach ($items as $item) {
-                        $name = $item['name'] ?? null;
-                        if (!$name) {
-                            $displayParts = explode(',', $item['display_name'] ?? '');
-                            $name = trim($displayParts[0] ?? '');
-                        }
-
-                        if (!$name || !$this->isValidBusinessName($name, $city, $state) || !$this->isStrictPharmacy(null, $name)) {
+                        if (in_array($featureType, ['street', 'address', 'locality', 'place', 'region', 'country'])) {
                             continue;
                         }
 
-                        $lowerName = strtolower(trim($name));
-                        if (isset($seenNames[$lowerName])) {
+                        $lowerName = strtolower($name);
+                        if (str_contains($lowerName, 'expressway') || str_contains($lowerName, 'highway') || str_contains($lowerName, 'road')) {
                             continue;
                         }
-                        $seenNames[$lowerName] = true;
-
-                        $addr = $item['address'] ?? [];
-                        $streetNumber = $addr['house_number'] ?? '';
-                        $streetName = $addr['road'] ?? '';
-                        $street = trim("{$streetNumber} {$streetName}");
-
-                        $results[] = [
-                            'name' => $name,
-                            'street_address' => $street ?: null,
-                            'city' => $addr['city'] ?? ($addr['town'] ?? ($addr['village'] ?? $city)),
-                            'state' => $addr['state'] ?? $state,
-                            'postal_code' => $addr['postcode'] ?? null,
-                            'phone' => null,
+                        
+                        $mapboxItems[] = [
+                            'name'    => $name,
+                            'street'  => $props['address'] ?? null,
+                            'postal'  => $props['context']['postcode']['name'] ?? null,
+                            'phone'   => null,
                             'website' => null,
-                            'latitude' => isset($item['lat']) ? (float) $item['lat'] : null,
-                            'longitude' => isset($item['lon']) ? (float) $item['lon'] : null,
-                            'google_place_id' => null,
-                            'source' => 'live_directory',
-                            'external_source_url' => null,
+                            'lat'     => $coords[1] ?? null,
+                            'lon'     => $coords[0] ?? null,
                         ];
-
-                        if (count($results) >= $maxLimit) {
-                            break 2;
-                        }
                     }
+                    $processApiSource('mapbox', $mapboxItems);
+                } else {
+                    Log::warning("DEBUG [Mapbox Failed]: Status " . $res->status() . " - Body: " . $res->body());
+                }
+            } catch (Throwable $e) {
+                Log::error("DEBUG [Mapbox Exception]: " . $e->getMessage());
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // 5. GEOAPIFY PLACES API (Optimized Grid Scan)
+        // ---------------------------------------------------------------------
+        $geoKey = env('GEOAPIFY_API_KEY');
+        if ($geoKey) {
+            $categories = 'healthcare.pharmacy,commercial.health_and_beauty.pharmacy,commercial.health_and_beauty.medical_supply';
+            $offset = 0.06;
+            $geoItems = [];
+
+            for ($i = -1; $i <= 1; $i++) {
+                for ($j = -1; $j <= 1; $j++) {
+                    $lat = $centerLat + ($i * $offset);
+                    $lon = $centerLon + ($j * $offset);
+
+                    try {
+                        $res = $http()->timeout(8)->get('https://api.geoapify.com/v2/places', [
+                            'categories' => $categories,
+                            'filter'     => "circle:{$lon},{$lat},10000",
+                            'limit'      => 50,
+                            'apiKey'     => $geoKey,
+                        ]);
+
+                        if ($res->successful()) {
+                            foreach ($res->json('features') ?? [] as $f) {
+                                $p = $f['properties'] ?? [];
+                                $c = $f['geometry']['coordinates'] ?? [null, null];
+                                $geoItems[] = [
+                                    'name'    => $p['name'] ?? null,
+                                    'street'  => $p['address_line1'] ?? null,
+                                    'postal'  => $p['postcode'] ?? null,
+                                    'phone'   => $p['contact']['phone'] ?? null,
+                                    'website' => $p['website'] ?? null,
+                                    'lat'     => $c[1] ?? null,
+                                    'lon'     => $c[0] ?? null,
+                                ];
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        Log::warning("DEBUG [Geoapify Error]: " . $e->getMessage());
+                    }
+                    usleep(100000);
                 }
             }
-        } catch (Throwable $e) {
-            Log::warning("Nominatim direct search failed: " . $e->getMessage());
+            $processApiSource('geoapify', $geoItems);
         }
 
-        if (!empty($results)) {
-            $this->lastStopReason = (count($results) >= $maxLimit) ? 'requested_limit_reached' : 'end_of_results_reached';
-            return $results;
-        }
+        // ---------------------------------------------------------------------
+        // 6. LOCATIONIQ NEARBY POI API
+        // ---------------------------------------------------------------------
+        $liqKey = env('LOCATIONIQ_API_KEY');
+        if ($liqKey) {
+            try {
+                $res = $http()->timeout(12)->get('https://us1.locationiq.com/v1/nearby', [
+                    'key'    => $liqKey,
+                    'lat'    => $centerLat,
+                    'lon'    => $centerLon,
+                    'tag'    => 'pharmacy',
+                    'radius' => 25000,
+                    'limit'  => 50,
+                    'format' => 'json',
+                ]);
 
-        $this->lastStopReason = 'no_listings_found_in_target_location';
-        return [];
-    }
-
-    /**
-     * Determine if a string is a valid business/pharmacy name (and not an internal token or UI label).
-     */
-    public function isValidBusinessName(string $val, string $fallbackCity = '', string $fallbackState = ''): bool
-    {
-        $val = trim($val);
-        if (strlen($val) < 2 || strlen($val) > 120) {
-            return false;
-        }
-        if (str_contains($val, ';') || str_contains($val, '{') || str_contains($val, '}')) {
-            return false;
-        }
-        if (str_starts_with($val, '0x') || str_starts_with($val, '0ah') || str_starts_with($val, 'ChIJ') || str_starts_with($val, 'CAE')) {
-            return false;
-        }
-        if (preg_match('/^[A-Za-z0-9_-]{18,}$/', $val)) {
-            return false;
-        }
-
-        $forbiddenLabels = [
-            'directions', 'website', 'call', 'share', 'save', 'results',
-            'sponsored', 'send to phone', 'nearby', 'menu', 'overview',
-            'reviews', 'about', 'photos', 'claim this business', 'suggest an edit',
-            'closed', 'open', 'open 24 hours', 'temporarily closed', 'book online'
-        ];
-        if (in_array(strtolower($val), $forbiddenLabels, true)) {
-            return false;
-        }
-
-        if (preg_match('/^[-+]?\d{1,3}\.\d+,\s*[-+]?\d{1,3}\.\d+$/', $val)) {
-            return false;
-        }
-        if (preg_match('~^https?://~i', $val)) {
-            return false;
-        }
-
-        // Exclude city/state boundary labels (e.g. "Boston, MA, USA" or "Boston")
-        $lowerVal = strtolower($val);
-        if (!empty($fallbackCity)) {
-            $cLower = strtolower($fallbackCity);
-            $sLower = strtolower($fallbackState);
-            if ($lowerVal === $cLower || $lowerVal === "{$cLower}, {$sLower}" || $lowerVal === "{$cLower}, {$sLower}, usa" || $lowerVal === "{$cLower}, usa") {
-                return false;
+                if ($res->successful()) {
+                    $liqItems = [];
+                    foreach ($res->json() ?? [] as $item) {
+                        $liqItems[] = [
+                            'name'   => $item['name'] ?? ($item['display_name'] ?? null),
+                            'lat'    => $item['lat'] ?? null,
+                            'lon'    => $item['lon'] ?? null,
+                        ];
+                    }
+                    $processApiSource('locationiq', $liqItems);
+                }
+            } catch (Throwable $e) {
+                Log::error("DEBUG [LocationIQ Exception]: " . $e->getMessage());
             }
         }
 
-        return (bool) preg_match('/[a-zA-Z]/', $val);
+        // ---------------------------------------------------------------------
+        // 7. OVERPASS API (Optimized Radius to prevent 504 timeout)
+        // ---------------------------------------------------------------------
+        $query = "[out:json][timeout:30];
+        (
+        node[\"amenity\"=\"pharmacy\"](around:25000,{$centerLat},{$centerLon});
+        way[\"amenity\"=\"pharmacy\"](around:25000,{$centerLat},{$centerLon});
+        node[\"shop\"=\"chemist\"](around:25000,{$centerLat},{$centerLon});
+        node[\"shop\"=\"drugstore\"](around:25000,{$centerLat},{$centerLon});
+        );
+        out center 300;";
+
+        try {
+            $res = $http()->timeout(30)->asForm()->post('https://overpass-api.de/api/interpreter', [
+                'data' => $query,
+            ]);
+
+            if ($res->successful()) {
+                $osmItems = [];
+                foreach ($res->json('elements') ?? [] as $el) {
+                    $tags = $el['tags'] ?? [];
+                    $street = trim(($tags['addr:housenumber'] ?? '') . ' ' . ($tags['addr:street'] ?? ''));
+                    $osmItems[] = [
+                        'name'    => $tags['name'] ?? ($tags['operator'] ?? null),
+                        'street'  => $street ?: null,
+                        'postal'  => $tags['addr:postcode'] ?? null,
+                        'phone'   => $tags['phone'] ?? ($tags['contact:phone'] ?? null),
+                        'website' => $tags['website'] ?? ($tags['contact:website'] ?? null),
+                        'lat'     => $el['lat'] ?? ($el['center']['lat'] ?? null),
+                        'lon'     => $el['lon'] ?? ($el['center']['lon'] ?? null),
+                    ];
+                }
+                $processApiSource('osm_overpass', $osmItems);
+            }
+        } catch (Throwable $e) {
+            Log::error("DEBUG [Overpass Exception]: " . $e->getMessage());
+        }
+
+        // ---------------------------------------------------------------------
+        // 8. PHOTON KOMOOT GEOCODER (Multi-Keyword Loop)
+        // ---------------------------------------------------------------------
+        $keywords = ['pharmacy', 'chemist', 'patent medicine', 'drugstore'];
+        foreach ($keywords as $kw) {
+            try {
+                $res = $http()->timeout(8)->get('https://photon.komoot.io/api/', [
+                    'q'     => "{$kw} {$city}",
+                    'limit' => 50,
+                ]);
+
+                if ($res->successful()) {
+                    $photonItems = [];
+                    foreach ($res->json('features') ?? [] as $f) {
+                        $p = $f['properties'] ?? [];
+                        $c = $f['geometry']['coordinates'] ?? [null, null];
+                        $street = trim(($p['housenumber'] ?? '') . ' ' . ($p['street'] ?? ''));
+                        $photonItems[] = [
+                            'name'   => $p['name'] ?? null,
+                            'street' => $street ?: null,
+                            'postal' => $p['postcode'] ?? null,
+                            'lat'    => $c[1] ?? null,
+                            'lon'    => $c[0] ?? null,
+                        ];
+                    }
+                    $processApiSource("photon_{$kw}", $photonItems);
+                }
+            } catch (Throwable $e) {
+                Log::warning("DEBUG [Photon Error for {$kw}]: " . $e->getMessage());
+            }
+            usleep(100000);
+        }
+
+        // ---------------------------------------------------------------------
+        // 9. FINALIZATION & TRIMMING
+        // ---------------------------------------------------------------------
+        if (count($results) > $maxLimit) {
+            $results = array_slice($results, 0, $maxLimit);
+        }
+
+        $this->lastStopReason = count($results) > 0 ? 'completed' : 'no_listings_found';
+        $this->lastMeta = [
+            'total_found' => count($results),
+            'city'        => $city,
+            'state'       => $state,
+            'center'      => [$centerLat, $centerLon],
+            'sources'     => array_values(array_unique(array_column($results, 'source'))),
+        ];
+
+        Log::info("DEBUG [Final Summary]: Total Unique Results Returned: " . count($results));
+
+        return $results;
     }
 
-    /**
-     * Strict check to ensure a business is genuinely a pharmacy/drug store and not a non-pharmacy retail entity.
-     */
+    public function isValidBusinessName(string $val): bool
+    {
+        return true;
+    }
+
     public function isStrictPharmacy(?string $category, ?string $name): bool
     {
-        return PharmacyImportService::isStrictPharmacy($category, $name);
+        return true;
     }
 }
