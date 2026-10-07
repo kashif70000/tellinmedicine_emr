@@ -169,6 +169,11 @@
                                         <i class="ti ti-star"></i><span>Ratings</span>
                                     </a>
                                 </li>
+                                 <li class="{{ $nav('admin.npi.index') }}">
+                                    <a href="{{ route('admin.npi.index') }}">
+                                        <i class="ti ti-file-invoice"></i><span>NPI Verification</span>
+                                    </a>
+                                </li>
                                 <li class="{{ $nav('admin.directory-scraper.*') }}">
                                     <a href="{{ route('admin.directory-scraper.index') }}">
                                         <i class="ti ti-database"></i><span>Labs & Pharmacies</span>
