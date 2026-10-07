@@ -26,6 +26,7 @@ use App\Http\Controllers\ChangePasswordController;
 use App\Http\Controllers\MedicineController;
 use App\Http\Controllers\PatientPreferenceController;
 use App\Http\Controllers\Admin\DirectoryScraperController;
+use App\Http\Controllers\Admin\NpiVerificationController;
 
 
 // Authentication Routes
@@ -302,4 +303,14 @@ Route::middleware(['auth'])->group(function () {
     // ── Dev-only debug routes (disabled automatically in production) ──
     Route::get('/agora/debug-token', [AgoraCallController::class, 'debugToken'])
         ->name('agora.debug-token');
+});
+
+Route::middleware(['auth'])->prefix('admin')->group(function () {
+
+    Route::get('/npi-verification', [NpiVerificationController::class, 'index'])
+    ->name('admin.npi.index');
+
+    Route::post('/npi-verification/verify', [NpiVerificationController::class, 'verify'])
+        ->name('admin.npi.verify');
+
 });
