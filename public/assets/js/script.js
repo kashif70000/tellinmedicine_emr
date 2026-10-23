@@ -1589,6 +1589,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const backButton = document.getElementById('doctor-back');
     const skipButton = document.getElementById('doctor-skip');
     const submitButton = document.getElementById('doctor-submit');
+	const licenseState = document.getElementById('doctor-license-state');
+	const massachusettsFields = document.getElementById('massachusetts-license-fields');
+	const verifyLicenseButton = document.getElementById('doctor-verify-license');
+	const licenseResult = document.getElementById('doctor-license-result');
+	const ukRegistrationFields = document.getElementById('uk-registration-fields');
+	const verifyUkRegistrationButton = document.getElementById('doctor-verify-uk-registration');
+	const ukRegistrationResult = document.getElementById('doctor-uk-registration-result');
+	let massachusettsLicenseVerified = false;
+	let ukRegistrationVerified = false;
+	let ukRegistrationReviewPending = false;
 
     // ❗ Prevent errors on other pages
     if (!step1 || !step2) return;
@@ -1658,8 +1668,26 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function validateStep2() {
+		const isUk = licenseState?.value === 'UK';
         const licenseValid = validateRequiredFields(['doctor-license']);
         const certificateField = document.getElementById('doctor-certificate');
+
+		if (licenseState?.value === 'MA') {
+			const massachusettsValid = validateRequiredFields([
+				'doctor-license-type',
+				'doctor-license-issue-date',
+				'doctor-license-expiration-date'
+			]);
+			if (!massachusettsValid) return false;
+			if (!massachusettsLicenseVerified) {
+				showLicenseResult('Please verify this Massachusetts license before submitting registration.', 'warning');
+				return false;
+			}
+		}
+		if (isUk && !ukRegistrationVerified && !ukRegistrationReviewPending) {
+			showUkRegistrationResult('Please verify your GMC registration using your name before submitting.', 'warning');
+			return false;
+		}
 
         if (!isDashboard && certificateField && certificateField.files.length === 0) {
             setInvalid(certificateField, 'Please upload a certificate');
@@ -1692,6 +1720,55 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+	function showLicenseResult(message, status) {
+		if (!licenseResult) return;
+		licenseResult.className = `alert alert-${status} mt-3 mb-0`;
+		licenseResult.textContent = message;
+	}
+
+	function showUkRegistrationResult(message, status) {
+		if (!ukRegistrationResult) return;
+		ukRegistrationResult.className = `alert alert-${status} mt-3 mb-0`;
+		ukRegistrationResult.textContent = message;
+	}
+
+	function updateLicenseStateFields() {
+		const isMassachusetts = licenseState?.value === 'MA';
+		const isUk = licenseState?.value === 'UK';
+		massachusettsFields?.classList.toggle('d-none', !isMassachusetts);
+		ukRegistrationFields?.classList.toggle('d-none', !isUk);
+		['doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date'].forEach(id => {
+			const field = document.getElementById(id);
+			if (field) field.required = isMassachusetts;
+		});
+		const licenseNumber = document.getElementById('doctor-license');
+		const licenseNumberLabel = document.getElementById('doctor-license-number-label');
+		verifyLicenseButton?.classList.toggle('d-none', !isMassachusetts);
+		verifyUkRegistrationButton?.classList.toggle('d-none', !isUk);
+		if (licenseNumber) {
+			licenseNumber.required = true;
+			licenseNumber.placeholder = isUk ? 'GMC Number' : 'License Number';
+		}
+		if (licenseNumberLabel) {
+			licenseNumberLabel.textContent = isUk ? 'GMC Number' : 'License Number';
+		}
+		if (skipButton) skipButton.classList.toggle('d-none', isMassachusetts || isUk);
+		massachusettsLicenseVerified = false;
+		ukRegistrationVerified = false;
+		ukRegistrationReviewPending = false;
+		if (licenseResult) licenseResult.classList.add('d-none');
+		if (ukRegistrationResult) ukRegistrationResult.classList.add('d-none');
+	}
+
+	function appendLicenseFields(formData) {
+		formData.append('license_state', licenseState?.value || '');
+		if (licenseState?.value === 'MA') {
+			formData.append('license_type', document.getElementById('doctor-license-type').value);
+			formData.append('license_issue_date', document.getElementById('doctor-license-issue-date').value);
+			formData.append('license_expiration_date', document.getElementById('doctor-license-expiration-date').value);
+		}
+	}
+
     function showStep(step) {
         step1.classList.toggle('active', step === 1);
         step2.classList.toggle('active', step === 2);
@@ -1709,6 +1786,117 @@ document.addEventListener('DOMContentLoaded', function () {
         if (nextButton) nextButton.style.display = 'none';
         if (skipButton) skipButton.style.display = 'none';
     }
+
+	licenseState?.addEventListener('change', updateLicenseStateFields);
+	['doctor-name', 'doctor-license', 'doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date'].forEach(id => {
+		document.getElementById(id)?.addEventListener('input', () => {
+			massachusettsLicenseVerified = false;
+			ukRegistrationVerified = false;
+			ukRegistrationReviewPending = false;
+			if (licenseResult) licenseResult.classList.add('d-none');
+			if (ukRegistrationResult) ukRegistrationResult.classList.add('d-none');
+		});
+		document.getElementById(id)?.addEventListener('change', () => {
+			massachusettsLicenseVerified = false;
+			ukRegistrationVerified = false;
+			ukRegistrationReviewPending = false;
+			if (licenseResult) licenseResult.classList.add('d-none');
+			if (ukRegistrationResult) ukRegistrationResult.classList.add('d-none');
+		});
+	});
+	updateLicenseStateFields();
+
+	verifyLicenseButton?.addEventListener('click', async function () {
+		const required = validateRequiredFields([
+			'doctor-name',
+			'doctor-license',
+			'doctor-license-type',
+			'doctor-license-issue-date',
+			'doctor-license-expiration-date'
+		]);
+		if (!required) return;
+
+		verifyLicenseButton.disabled = true;
+		showLicenseResult('Checking the official Massachusetts license source...', 'secondary');
+		try {
+			const response = await fetch('/register/doctor/verify-license', {
+				method: 'POST',
+				headers: {
+					'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+					'Accept': 'application/json',
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					name: document.getElementById('doctor-name').value,
+					license_state: licenseState.value,
+					license_number: document.getElementById('doctor-license').value,
+					license_type: document.getElementById('doctor-license-type').value,
+					license_issue_date: document.getElementById('doctor-license-issue-date').value,
+					license_expiration_date: document.getElementById('doctor-license-expiration-date').value
+				})
+			});
+			const result = await response.json();
+			massachusettsLicenseVerified = result.success === true && result.status === 'verified';
+			const message = massachusettsLicenseVerified
+				? 'Massachusetts license verification succeeded.'
+				: result.status === 'manual_review'
+					? 'License requires administrative review.'
+					: result.status === 'unable_to_verify'
+						? 'Unable to verify right now. Please retry.'
+						: 'License verification failed. Check the submitted information.';
+			showLicenseResult(message, massachusettsLicenseVerified ? 'success' : 'warning');
+		} catch (error) {
+			massachusettsLicenseVerified = false;
+			showLicenseResult('Unable to Verify: the verification service could not be reached.', 'warning');
+		} finally {
+			verifyLicenseButton.disabled = false;
+		}
+	});
+
+	verifyUkRegistrationButton?.addEventListener('click', async function () {
+		const nameField = document.getElementById('doctor-name');
+		const gmcNumberField = document.getElementById('doctor-license');
+		if (!nameField?.value.trim()) {
+			setInvalid(nameField, 'Enter your full name before GMC verification');
+			return;
+		}
+		if (!gmcNumberField?.value.trim()) {
+			setInvalid(gmcNumberField, 'Enter your GMC number before verification');
+			return;
+		}
+
+		verifyUkRegistrationButton.disabled = true;
+		ukRegistrationVerified = false;
+		showUkRegistrationResult('Checking the GMC register using your name...', 'secondary');
+		try {
+			const response = await fetch('/register/doctor/verify-uk-registration', {
+				method: 'POST',
+				headers: {
+					'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+					'Accept': 'application/json',
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					name: nameField.value,
+					gmc_registration_number: gmcNumberField.value
+				})
+			});
+			const result = await response.json();
+			ukRegistrationVerified = result.success === true && result.status === 'verified';
+			ukRegistrationReviewPending = ['manual_review', 'unavailable'].includes(result.status);
+			const message = ukRegistrationVerified
+				? 'GMC registration verification succeeded.'
+				: ukRegistrationReviewPending
+						? 'Automatic GMC verification is unavailable or inconclusive. You may submit your application for admin review; your registration will remain unverified until approved.'
+						: result.message || 'No matching GMC registration was verified.';
+			showUkRegistrationResult(message, ukRegistrationVerified ? 'success' : (ukRegistrationReviewPending ? 'info' : (result.status === 'failed' ? 'danger' : 'warning')));
+		} catch (error) {
+			ukRegistrationVerified = false;
+			showUkRegistrationResult('Unable to reach the GMC verification service. Please retry.', 'warning');
+		} finally {
+			verifyUkRegistrationButton.disabled = false;
+		}
+	});
 
     // =========================
     // EVENTS
@@ -1731,6 +1919,8 @@ document.addEventListener('DOMContentLoaded', function () {
         appendDoctorRegistrationStep1(formData);
 
         formData.append('skip', 1);
+		formData.append('license_number', document.getElementById('doctor-license').value);
+		appendLicenseFields(formData);
 
         fetch('/register/doctor', {
             method: 'POST',
@@ -1750,7 +1940,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     if (data.success) {
-        window.location.href = '/login';
+        if (data.verification_pending) {
+            showStep(3);
+        } else {
+            window.location.href = '/login';
+        }
     }
 });
     });
@@ -1767,6 +1961,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         formData.append('license_number', document.getElementById('doctor-license').value);
+		appendLicenseFields(formData);
 
         const file = document.getElementById('doctor-certificate');
         if (file && file.files.length > 0) {
@@ -1785,12 +1980,36 @@ document.addEventListener('DOMContentLoaded', function () {
             },
             body: formData
         })
-        .then(res => res.json())
-        .then(data => {
+		.then(async res => ({ response: res, data: await res.json() }))
+		.then(({ response, data }) => {
             if (data.success) {
-                window.location.href = isDashboard ? '/dashboard' : '/login';
+				if (!isDashboard && data.verification_pending) {
+					showStep(3);
+				} else {
+					window.location.href = isDashboard ? '/dashboard' : '/login';
+				}
+				return;
             }
-        });
+
+			const validationMessage = data.errors
+				? Object.values(data.errors).flat().join(' ')
+				: null;
+			const message = data.message || validationMessage || 'The registration request could not be completed.';
+			if (!isDashboard && licenseState?.value === 'MA') {
+				massachusettsLicenseVerified = false;
+				showLicenseResult(`${data.status || 'unable_to_verify'}: ${message} Please retry verification.`, 'warning');
+			} else {
+				alert(message);
+			}
+		})
+		.catch(() => {
+			if (!isDashboard && licenseState?.value === 'MA') {
+				massachusettsLicenseVerified = false;
+				showLicenseResult('Unable to Verify: the registration service could not be reached. Please retry.', 'warning');
+			} else {
+				alert('The registration service could not be reached. Please retry.');
+			}
+		});
     });
 
 });

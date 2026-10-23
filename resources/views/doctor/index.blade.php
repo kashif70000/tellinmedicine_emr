@@ -39,12 +39,20 @@
                         <th>Experience</th>
                         <th>Fees</th>
                         <th>Rating</th>
+                        <th>License Verification</th>
                         <th>Status</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="doctors-tbody">
                     @forelse($doctors as $doctor)
+                        @php
+                            $licenseVerificationStatus = match ($doctor->license_state) {
+                                'MA' => $doctor->license_verification_status,
+                                'UK' => $doctor->uk_verification_status ?? ($doctor->is_verified ? 'verified' : 'pending'),
+                                default => 'not_applicable',
+                            };
+                        @endphp
                         <tr>
                             <td>{{ $doctor->id }}</td>
                             <td>{{ $doctor->user->name }}</td>
@@ -53,6 +61,13 @@
                             <td><strong>${{ number_format($doctor->fees, 2) }}</strong></td>
                             <td>
                                 <span class="badge bg-info">{{ number_format($doctor->rating_avg, 1) }} / 5</span>
+                            </td>
+                            <td>
+                                @if($licenseVerificationStatus !== 'not_applicable')
+                                    <span class="badge bg-{{ $licenseVerificationStatus === 'verified' ? 'success' : (in_array($licenseVerificationStatus, ['expired', 'failed']) ? 'danger' : 'warning') }} text-capitalize">{{ str_replace('_', ' ', $licenseVerificationStatus) }}</span>
+                                @else
+                                    <span class="text-muted">Not applicable</span>
+                                @endif
                             </td>
                             <td>
                                 @if($doctor->is_verified)
@@ -70,6 +85,16 @@
                                         </a>
                                     @endif
                                     @if(auth()->user()->role === 'admin')
+                                        <a href="{{ route('doctor.profile', $doctor) }}" class="btn btn-outline-info" title="Open doctor profile">
+                                            <i class="ti ti-user-cog"></i>
+                                        </a>
+                                        @if($doctor->license_state === 'MA')
+                                            <button type="button" class="btn btn-outline-primary verify-license-button" data-url="{{ route('admin.doctors.license.verify', $doctor) }}" title="Verify Massachusetts license"><i class="ti ti-refresh"></i></button>
+                                        @elseif($doctor->license_state === 'UK')
+                                            <button type="button" class="btn btn-outline-success verify-license-button" data-url="{{ route('admin.doctors.uk.verify', $doctor) }}" title="Verify GMC registration"><i class="ti ti-shield-check"></i></button>
+                                        @else
+                                            <button type="button" class="btn btn-outline-secondary" disabled title="License verification is not available for this jurisdiction"><i class="ti ti-shield-question"></i></button>
+                                        @endif
                                         <form action="{{ route('doctors.destroy', $doctor->id) }}" method="POST" style="display:inline;" class="delete-form">
                                             @csrf @method('DELETE')
                                             <button type="submit" class="btn btn-danger" data-doctor-id="{{ $doctor->id }}"><i class="ti ti-trash"></i></button>
@@ -80,7 +105,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="8" class="text-center text-muted py-4">No doctors found</td>
+                            <td colspan="9" class="text-center text-muted py-4">No doctors found</td>
                         </tr>
                     @endforelse
                 </tbody>
@@ -99,6 +124,7 @@
     const FETCH_URL = "{{ route('doctors.index') }}";
     const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     const USER_ROLE = "{{ $userRole }}";
+    const LICENSE_VERIFY_URL = "{{ route('admin.doctors.license.verify', ['doctor' => '__DOCTOR__']) }}";
 
     const searchInput = document.getElementById('filter-search');
     const resetBtn = document.getElementById('filter-reset');
@@ -139,7 +165,7 @@
 
     function renderRows(rows) {
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">No doctors found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">No doctors found</td></tr>';
             return;
         }
 
@@ -149,6 +175,23 @@
                 : '<span class="badge bg-warning">Pending</span>';
 
             let actions = `<a href="${doctor.show_url}" class="btn btn-info"><i class="ti ti-eye"></i></a>`;
+            if (USER_ROLE === 'admin' && doctor.profile_url) {
+                actions += `<a href="${doctor.profile_url}" class="btn btn-outline-info" title="Open doctor profile"><i class="ti ti-user-cog"></i></a>`;
+            }
+
+            const licenseStatus = doctor.license_verification_status === 'not_applicable'
+                ? '<span class="text-muted">Not applicable</span>'
+                : `<span class="badge bg-${doctor.license_verification_status === 'verified' ? 'success' : (['failed', 'expired'].includes(doctor.license_verification_status) ? 'danger' : 'warning')} text-capitalize">${esc(doctor.license_verification_status.replaceAll('_', ' '))}</span>`;
+
+            if (USER_ROLE === 'admin') {
+                if (doctor.license_verify_url) {
+                    actions += `<button type="button" class="btn btn-outline-primary verify-license-button" data-url="${doctor.license_verify_url}" title="Verify Massachusetts license"><i class="ti ti-refresh"></i></button>`;
+                } else if (doctor.uk_verify_url) {
+                    actions += `<button type="button" class="btn btn-outline-success verify-license-button" data-url="${doctor.uk_verify_url}" title="Verify GMC registration"><i class="ti ti-shield-check"></i></button>`;
+                } else {
+                    actions += '<button type="button" class="btn btn-outline-secondary" disabled title="License verification is not available for this jurisdiction"><i class="ti ti-shield-question"></i></button>';
+                }
+            }
 
             if (USER_ROLE === 'patient' && doctor.booking_url) {
                 actions += `<a href="${doctor.booking_url}" class="btn btn-primary" title="${doctor.is_verified ? 'Book appointment' : 'Doctor is not verified yet'}"><i class="ti ti-calendar-plus"></i></a>`;
@@ -169,12 +212,53 @@
                 <td>${esc(doctor.experience)}</td>
                 <td><strong>${esc(doctor.fees)}</strong></td>
                 <td><span class="badge bg-info">${esc(doctor.rating)}</span></td>
+                <td>${licenseStatus}</td>
                 <td>${status}</td>
                 <td><div class="btn-group btn-group-sm" role="group">${actions}</div></td>
             </tr>`;
         }).join('');
 
         bindDeleteForms();
+        bindLicenseVerificationButtons();
+    }
+
+    function bindLicenseVerificationButtons() {
+        document.querySelectorAll('.verify-license-button').forEach(button => {
+            button.addEventListener('click', async () => {
+                button.disabled = true;
+                try {
+                    const response = await fetch(button.dataset.url, {
+                        method: 'POST',
+                        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': CSRF_TOKEN },
+                    });
+                    const result = await response.json();
+                    const outcome = {
+                        verified: { title: 'License Verified', icon: 'success' },
+                        manual_review: { title: 'Manual Review Required', icon: 'warning' },
+                        unavailable: { title: 'Verification Unavailable', icon: 'info' },
+                        unable_to_verify: { title: 'Unable to Verify', icon: 'info' },
+                        expired: { title: 'License Expired', icon: 'error' },
+                        failed: { title: 'Verification Failed', icon: 'error' },
+                    }[result.status] || { title: 'Verification Result', icon: 'info' };
+                    await Swal.fire({
+                        title: outcome.title,
+                        text: result.message || 'The license verification request was completed.',
+                        icon: outcome.icon,
+                        confirmButtonText: 'Close',
+                    });
+                    fetchRows();
+                } catch (error) {
+                    await Swal.fire({
+                        title: 'Unable to Verify',
+                        text: 'The verification service could not be reached. Please retry later.',
+                        icon: 'info',
+                        confirmButtonText: 'Close',
+                    });
+                } finally {
+                    button.disabled = false;
+                }
+            }, { once: true });
+        });
     }
 
     function bindPaginationLinks() {
@@ -222,6 +306,7 @@
 
     bindPaginationLinks();
     bindDeleteForms();
+    bindLicenseVerificationButtons();
 
     function esc(value) {
         return String(value ?? '')

@@ -26,6 +26,20 @@ class AppServiceProvider extends ServiceProvider
             \App\Services\Contracts\LabScraperInterface::class,
             \App\Services\GoogleMapsLabScraper::class
         );
+
+        $this->app->bind(\App\Services\MassachusettsLicenseSource::class, function ($app) {
+            return $app->make(config(
+                'services.massachusetts_license.source',
+                \App\Services\UnavailableMassachusettsLicenseSource::class
+            ));
+        });
+
+        $this->app->bind(\App\Services\GmcUkRegistrationSource::class, function ($app) {
+            return $app->make(config(
+                'services.gmc_uk.source',
+                \App\Services\GmcUkHtmlSource::class
+            ));
+        });
     }
 
     /**
