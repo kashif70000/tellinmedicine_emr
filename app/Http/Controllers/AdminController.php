@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Admin;
 use App\Http\Requests\StoreAdminRequest;
 use App\Http\Requests\UpdateAdminRequest;
-use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use App\Models\Doctor;
 
 class AdminController extends Controller
@@ -62,6 +62,8 @@ class AdminController extends Controller
 
     public function doctorVerifications()
     {
+        abort_unless(Auth::user()?->role === 'admin', 403);
+
         $doctors = Doctor::with('user')
             ->where('verification_status', 'pending')
             ->get();
@@ -114,9 +116,14 @@ class AdminController extends Controller
 
     public function approveDoctor($doctorId)
     {
+        abort_unless(Auth::user()?->role === 'admin', 403);
         $doctor = Doctor::find($doctorId);
 
         if ($doctor) {
+            if ($doctor->license_state === 'MA' && $doctor->license_verification_status !== 'verified') {
+                return back()->withErrors(['license' => 'A Massachusetts license must be verified before doctor approval.']);
+            }
+
             $doctor->update([
                 'is_verified' => true,
                 'verification_status' => 'approved'
@@ -128,6 +135,7 @@ class AdminController extends Controller
 
     public function rejectDoctor($doctorId)
     {
+        abort_unless(Auth::user()?->role === 'admin', 403);
         $doctor = Doctor::find($doctorId);
 
         if ($doctor) {

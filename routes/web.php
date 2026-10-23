@@ -49,7 +49,15 @@ Route::get('/register/doctor', function () {
     return view('auth.doctor-register');
 })->name('register.doctor');
 
-Route::post('/register/doctor', [DoctorController::class, 'store'])->name('register.doctor.store');
+Route::post('/register/doctor', [DoctorController::class, 'store'])
+    ->middleware('throttle:10,1')
+    ->name('register.doctor.store');
+Route::post('/register/doctor/verify-license', [DoctorController::class, 'verifyRegistrationLicense'])
+    ->middleware('throttle:6,1')
+    ->name('register.doctor.verify-license');
+Route::post('/register/doctor/verify-uk-registration', [DoctorController::class, 'verifyRegistrationUk'])
+    ->middleware('throttle:6,1')
+    ->name('register.doctor.verify-uk-registration');
 
 
 Route::get('/auth/google', [SocialController::class, 'redirectToGoogle']);
@@ -167,13 +175,24 @@ Route::post('/register-mark-verified', [PatientController::class, 'markVerifiedA
 
 //admin doctor verification routes
 Route::get('/admin/doctor-verifications', [AdminController::class, 'doctorVerifications'])
+    ->middleware('auth')
     ->name('doctor-verifications');
 
 Route::post('/admin/doctor-verifications/{doctor}/approve', [AdminController::class, 'approveDoctor'])
+    ->middleware('auth')
     ->name('doctor.approve');
 
 Route::post('/admin/doctor-verifications/{doctor}/reject', [AdminController::class, 'rejectDoctor'])
+    ->middleware('auth')
     ->name('doctor.reject');
+
+Route::post('/admin/doctors/{doctor}/license-verification', [DoctorController::class, 'verifyMassachusettsLicense'])
+    ->middleware(['auth', 'throttle:6,1'])
+    ->name('admin.doctors.license.verify');
+
+Route::post('/admin/doctors/{doctor}/uk-registration-verification', [DoctorController::class, 'verifyUkRegistration'])
+    ->middleware(['auth', 'throttle:6,1'])
+    ->name('admin.doctors.uk.verify');
 
 // Admin Site Settings (Logo & Favicon)
 Route::middleware(['auth'])->group(function () {

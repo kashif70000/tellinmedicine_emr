@@ -60,4 +60,15 @@ return [
         'app_id' => env('AGORA_APP_ID', ''),
         'app_certificate' => env('AGORA_APP_CERTIFICATE', ''),
     ],
+
+    'massachusetts_license' => [
+        'source' => env('MASSACHUSETTS_LICENSE_SOURCE', \App\Services\MassachusettsLicensingApiSource::class),
+        'endpoint_url' => env('MASSACHUSETTS_PHYSICIAN_SEARCH_URL', 'https://api.medboard.mass.gov/api-public/search'),
+    ],
+
+    'gmc_uk' => [
+        'source' => env('GMC_UK_SOURCE', \App\Services\GmcUkHtmlSource::class),
+        'search_url' => env('GMC_UK_SEARCH_URL', 'https://www.gmc-uk.org/registrants'),
+        'cookie' => env('REQUEST_COOKIE', ''),
+    ],
 ];

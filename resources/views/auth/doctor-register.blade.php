@@ -340,7 +340,43 @@
                                             </small>
                                         </div>
                                     <div class="col-md-12">
-                                        <label class="form-label">License Number</label>
+                                        <label class="form-label" for="doctor-license-state">License Jurisdiction</label>
+                                        <select id="doctor-license-state" name="license_state" class="form-select" required>
+                                            <option value="">Select license jurisdiction</option>
+                                            <option value="MA">Massachusetts (MA)</option>
+                                            <option value="UK">United Kingdom (UK)</option>
+                                        </select>
+                                    </div>
+                                    <div id="massachusetts-license-fields" class="col-12 d-none">
+                                        <div class="row g-3">
+                                            <div class="col-md-6">
+                                                <label class="form-label" for="doctor-license-type">License Type</label>
+                                                <select id="doctor-license-type" name="license_type" class="form-select">
+                                                    <option value="">Select physician license type</option>
+                                                    <option value="Full Physician">Full Physician</option>
+                                                    <option value="Limited Physician">Limited Physician</option>
+                                                    <option value="Temporary Physician">Temporary Physician</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label class="form-label" for="doctor-license-issue-date">Latest License Issue Date</label>
+                                                <input id="doctor-license-issue-date" name="license_issue_date" type="date" class="form-control">
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label class="form-label" for="doctor-license-expiration-date">License Expiration Date</label>
+                                                <input id="doctor-license-expiration-date" name="license_expiration_date" type="date" class="form-control">
+                                            </div>
+                                            <div class="col-12">
+                                                <div id="doctor-license-result" class="alert alert-secondary mt-3 mb-0 d-none" role="status" aria-live="polite"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="uk-registration-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">GMC registration is checked using your full name and GMC number. Both are required for verification.</p>
+                                        <div id="doctor-uk-registration-result" class="alert alert-secondary mt-3 mb-0 d-none" role="status" aria-live="polite"></div>
+                                    </div>
+                                    <div class="col-md-12">
+                                        <label id="doctor-license-number-label" class="form-label">License Number</label>
                                         <div class="input-group">
                                             <span class="input-group-text border-end-0 bg-white">
                                                 <i class="ti ti-id-badge fs-14 text-dark"></i>
@@ -361,7 +397,9 @@
                                 <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center gap-2 mt-4">
                                     <button id="doctor-back" type="button" class="btn btn-outline-success">Back</button>
                                     <div class="d-flex gap-2">
-                                        <button id="doctor-skip" type="button" class="btn btn-outline-success">Skip for Now</button>
+                                        <button id="doctor-skip" type="button" class="btn btn-outline-success d-none">Skip for Now</button>
+                                        <button id="doctor-verify-license" type="button" class="btn btn-outline-success d-none"><i class="ti ti-shield-check me-1"></i>Verify License</button>
+                                        <button id="doctor-verify-uk-registration" type="button" class="btn btn-outline-success d-none"><i class="ti ti-shield-check me-1"></i>Verify GMC Registration</button>
                                         <button id="doctor-submit" type="button" class="btn bg-success text-white">Submit</button>
                                     </div>
                                 </div>

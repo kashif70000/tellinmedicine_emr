@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Foundation\Auth\AuthenticatesUsers;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 
 class LoginController extends Controller
 {
@@ -36,5 +38,20 @@ class LoginController extends Controller
     {
         $this->middleware('guest')->except('logout');
         $this->middleware('auth')->only('logout');
+    }
+
+    protected function authenticated(Request $request, $user)
+    {
+        $doctor = $user->doctor;
+        $licenseStatus = $doctor?->license_verification_status;
+        $isUnavailableWithExistingAccess = $licenseStatus === 'unable_to_verify' && $user->is_active;
+
+        if ($user->role === 'doctor' && $doctor?->license_state === 'MA' && $licenseStatus !== 'verified' && ! $isUnavailableWithExistingAccess) {
+            Auth::logout();
+
+            return redirect()->route('login')->withErrors([
+                'email' => 'Massachusetts physician licensure must be verified before doctor access is enabled.',
+            ]);
+        }
     }
 }

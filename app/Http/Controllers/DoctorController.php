@@ -2,19 +2,39 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Appointment;
 use App\Models\Doctor;
+use App\Models\LicenseVerificationAttempt;
 use App\Models\Patient;
 use App\Models\User;
+use App\Services\GmcUkVerificationService;
+use App\Services\MassachusettsLicenseVerificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 class DoctorController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Doctor::with('user');
+        $query = Doctor::query()
+            ->select([
+                'id',
+                'user_id',
+                'specialization',
+                'experience',
+                'fees',
+                'is_verified',
+                'rating_avg',
+                'license_state',
+                'license_verification_status',
+                'uk_verification_status',
+            ])
+            ->with('user');
+
+        if (DB::connection()->getDriverName() === 'mysql') {
+            $query->forceIndex('doctors_verified_id_index');
+        }
 
         if ($request->filled('search')) {
             $search = $request->search;
@@ -27,7 +47,11 @@ class DoctorController extends Controller
             });
         }
 
-        $doctors = $query->orderByDesc('is_verified')->paginate(10)->withQueryString();
+        $doctors = $query
+            ->orderByDesc('is_verified')
+            ->orderByDesc('id')
+            ->paginate(10)
+            ->withQueryString();
 
         if ($request->expectsJson()) {
             $userRole = Auth::user()?->role;
@@ -42,7 +66,22 @@ class DoctorController extends Controller
                         'fees' => '$' . number_format($doctor->fees, 2),
                         'rating' => number_format($doctor->rating_avg, 1) . ' / 5',
                         'is_verified' => (bool) $doctor->is_verified,
+                        'license_state' => $doctor->license_state,
+                        'license_verification_status' => match ($doctor->license_state) {
+                            'MA' => $doctor->license_verification_status,
+                            'UK' => $doctor->uk_verification_status ?? ($doctor->is_verified ? 'verified' : 'pending'),
+                            default => 'not_applicable',
+                        },
                         'show_url' => route('doctors.show', $doctor->id),
+                        'profile_url' => $userRole === 'admin'
+                            ? route('doctor.profile', $doctor->id)
+                            : null,
+                        'license_verify_url' => $userRole === 'admin' && $doctor->license_state === 'MA'
+                            ? route('admin.doctors.license.verify', $doctor->id)
+                            : null,
+                        'uk_verify_url' => $userRole === 'admin' && $doctor->license_state === 'UK'
+                            ? route('admin.doctors.uk.verify', $doctor->id)
+                            : null,
                         'booking_url' => $userRole === 'patient'
                             ? route('doctors.show', $doctor->id) . '#appointment-booking-card'
                             : null,
@@ -63,101 +102,305 @@ class DoctorController extends Controller
         return view('doctor.create');
     }
 
-    public function store(Request $request)
-{
-    try {
-
-        $isSkip = $request->has('skip');
-
-        // ===============================
-        // 1. VALIDATION
-        // ===============================
+    public function store(Request $request, MassachusettsLicenseVerificationService $licenseVerifier, GmcUkVerificationService $ukVerifier)
+    {
+        $isSkip = $request->boolean('skip');
+        $isMassachusetts = strtoupper((string) $request->input('license_state')) === 'MA';
+        $isUk = strtoupper((string) $request->input('license_state')) === 'UK';
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email',
-            'password' => 'required|confirmed|min:8',
-
-            'phone' => 'required|string|max:50',
-            'specialization' => 'required|string|max:255',
-            'experience' => 'required|integer|min:0',
-            'fees' => 'required|numeric|min:0',
-            'clinic_name' => 'required|string|max:255',
-            'address' => 'nullable|string|max:255',
-
-             'license_number' => $isSkip ? 'nullable|string|max:255' : 'required|string|max:255',
-
-            // 👇 KEY FIX HERE
-                'certificate' => $isSkip
-                ? 'nullable|file|mimes:pdf,jpg,jpeg,png|max:5120'
-                : 'required|file|mimes:pdf,jpg,jpeg,png|max:5120',
-                ]);
-
-        // ===============================
-        // 2. CREATE USER
-        // ===============================
-        $user = User::create([
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'password' => Hash::make($validated['password']),
-            'role' => 'doctor',
-            'is_active' => true,
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+            'password' => ['required', 'confirmed', 'min:8'],
+            'phone' => ['required', 'string', 'max:50'],
+            'specialization' => ['required', 'string', 'max:255'],
+            'experience' => ['required', 'integer', 'min:0'],
+            'fees' => ['required', 'numeric', 'min:0'],
+            'clinic_name' => ['required', 'string', 'max:255'],
+            'address' => ['nullable', 'string', 'max:255'],
+            'license_state' => [$request->routeIs('register.doctor.store') ? 'required' : 'nullable', 'string', 'in:MA,UK'],
+            'license_number' => [$isUk || $isMassachusetts || ! $isSkip ? 'required' : 'nullable', 'string', 'max:255'],
+            'license_type' => [$isMassachusetts ? 'required' : 'nullable', 'in:Full Physician,Limited Physician,Temporary Physician'],
+            'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
+            'license_expiration_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'after:license_issue_date'],
+            'certificate' => [$isSkip && ! $isMassachusetts ? 'nullable' : 'required', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
         ]);
+        $validated['license_state'] = isset($validated['license_state']) ? strtoupper($validated['license_state']) : null;
 
-        // ===============================
-        // 3. FILE UPLOAD (if exists)
-        // ===============================
-        $certificatePath = null;
+        $ukResult = null;
+        $licenseResult = null;
 
-        if ($request->hasFile('certificate')) {
-            $certificatePath = $request->file('certificate')
-                ->store('certificates', 'public');
+        if ($isUk) {
+            $ukResult = $ukVerifier->verify([
+                'name' => $validated['name'],
+                'gmc_registration_number' => $validated['license_number'] ?? null,
+            ]);
+
+            if ($ukResult['status'] === 'verified') {
+                $validated['license_state'] = 'UK';
+                $validated['license_number'] = $ukResult['official_data']['gmc_number'] ?? $validated['license_number'] ?? null;
+            }
         }
 
-        // ===============================
-        // 4. CREATE DOCTOR (BOTH CASES)
-        // ===============================
-        Doctor::create([
-            'user_id' => $user->id,
+        if ($isMassachusetts) {
+            $licenseResult = $licenseVerifier->verify($validated);
+            if ($licenseResult['status'] !== 'verified') {
+                $this->recordLicenseAttempt($validated, $licenseResult);
 
-            'phone' => $validated['phone'],
-            'specialization' => $validated['specialization'],
-            'experience' => $validated['experience'],
-            'fees' => $validated['fees'],
-            'clinic_name' => $validated['clinic_name'],
-            'address' => $validated['address'] ?? null,
-            'license_number' => $validated['license_number'] ?? null,
-            'certificate_path' => $certificatePath,
+                return response()->json([
+                    'success' => false,
+                    'status' => $licenseResult['status'],
+                    'message' => $licenseResult['message'],
+                ], 422);
+            }
+        } elseif ($ukResult !== null && $ukResult['status'] === 'failed') {
+            $this->recordLicenseAttempt($validated, $ukResult);
 
-            // IMPORTANT LOGIC
-            'verification_status' => $isSkip ? 'not_submitted' : 'not_submitted',
-            'is_verified' => 0,
-            'rating_avg' => 0,
-        ]);
+            return response()->json([
+                'success' => false,
+                'status' => $ukResult['status'],
+                'message' => $ukResult['message'],
+            ], 422);
+        }
 
-        // ===============================
-        // 5. RESPONSE
-        // ===============================
+        $certificatePath = $request->hasFile('certificate')
+            ? $request->file('certificate')->store('certificates', 'public')
+            : null;
+
+        $doctor = DB::transaction(function () use ($validated, $certificatePath, $isMassachusetts, $isUk, $licenseResult, $ukResult) {
+            $user = User::create([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                'role' => 'doctor',
+                'is_active' => true,
+            ]);
+
+            $doctor = Doctor::create([
+                'user_id' => $user->id,
+                'phone' => $validated['phone'],
+                'specialization' => $validated['specialization'],
+                'experience' => $validated['experience'],
+                'fees' => $validated['fees'],
+                'clinic_name' => $validated['clinic_name'],
+                'address' => $validated['address'] ?? null,
+                'license_number' => $validated['license_number'] ?? null,
+                'certificate_path' => $certificatePath,
+                'verification_status' => ($isMassachusetts || ($ukResult['status'] ?? null) === 'verified')
+                    ? 'approved'
+                    : ($isUk ? 'pending' : 'not_submitted'),
+                'is_verified' => $isMassachusetts || ($ukResult['status'] ?? null) === 'verified',
+                'rating_avg' => 0,
+                'license_state' => $validated['license_state'] ?? null,
+                'license_type' => $validated['license_type'] ?? null,
+                'license_issue_date' => $validated['license_issue_date'] ?? null,
+                'license_expiration_date' => $validated['license_expiration_date'] ?? null,
+                'license_verification_status' => $licenseResult['status'] ?? ($ukResult['status'] ?? 'pending'),
+                'official_license_status' => $licenseResult['official_data']['status'] ?? ($ukResult['official_data']['registration_status'] ?? null),
+                'official_license_issue_date' => $licenseResult['official_data']['issue_date'] ?? null,
+                'official_license_expiration_date' => $licenseResult['official_data']['expiration_date'] ?? null,
+                'license_verification_data' => $licenseResult['official_data'] ?? ($ukResult['official_data'] ?? null),
+                'license_verification_source' => $licenseResult['source'] ?? ($ukResult['source'] ?? null),
+                'license_verification_message' => $licenseResult['message'] ?? ($ukResult['message'] ?? null),
+                'license_verified_at' => $isMassachusetts || ($ukResult['status'] ?? null) === 'verified' ? now() : null,
+                'uk_verification_status' => $ukResult['status'] ?? null,
+                'uk_gmc_number' => $ukResult['official_data']['gmc_number'] ?? null,
+                'uk_verified_name' => $ukResult['official_data']['full_name'] ?? null,
+                'uk_profile_url' => $ukResult['official_data']['profile_url'] ?? null,
+                'uk_registration_status' => $ukResult['official_data']['registration_status'] ?? null,
+                'uk_licence_status' => $ukResult['official_data']['licence_status'] ?? null,
+                'uk_verification_data' => $ukResult['official_data'] ?? null,
+                'uk_verification_source' => $ukResult['source'] ?? null,
+                'uk_verification_message' => $ukResult['message'] ?? null,
+                'uk_verified_at' => ($ukResult['status'] ?? null) === 'verified' ? now() : null,
+            ]);
+
+            if ($isMassachusetts) {
+                $this->recordLicenseAttempt($validated, $licenseResult, $doctor);
+            } elseif ($ukResult !== null) {
+                $this->recordLicenseAttempt($validated, $ukResult, $doctor);
+            }
+
+            return $doctor;
+        });
+
         return response()->json([
             'success' => true,
-            'message' => 'Doctor registered successfully',
-            'skip' => $isSkip
+            'message' => $isUk && ($ukResult['status'] ?? null) !== 'verified'
+                ? 'Your application was submitted for administrative review. GMC registration has not been automatically verified.'
+                : 'Doctor registered successfully.',
+            'skip' => $isSkip,
+            'verification_pending' => $isUk && ($ukResult['status'] ?? null) !== 'verified',
+            'doctor_id' => $doctor->id,
+        ]);
+    }
+
+    public function verifyRegistrationLicense(Request $request, MassachusettsLicenseVerificationService $licenseVerifier)
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'license_state' => ['required', 'in:MA'],
+            'license_type' => ['required', 'in:Full Physician,Limited Physician,Temporary Physician'],
+            'license_number' => ['required', 'string', 'max:255'],
+            'license_issue_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
+            'license_expiration_date' => ['required', 'date_format:Y-m-d', 'after:license_issue_date'],
         ]);
 
-    } catch (\Illuminate\Validation\ValidationException $e) {
+        $result = $licenseVerifier->verify($validated);
+        $this->recordLicenseAttempt($validated, $result);
 
         return response()->json([
-            'success' => false,
-            'errors' => $e->errors()
-        ], 422);
-
-    } catch (\Exception $e) {
-
-        return response()->json([
-            'success' => false,
-            'message' => $e->getMessage()
-        ], 500);
+            'success' => $result['status'] === 'verified',
+            'status' => $result['status'],
+            'message' => $result['message'],
+            'official_data' => $result['official_data'],
+        ], $result['status'] === 'verified' ? 200 : 422);
     }
-}
+
+    public function verifyRegistrationUk(Request $request, GmcUkVerificationService $ukVerifier)
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'gmc_registration_number' => ['required', 'string', 'max:255'],
+        ]);
+
+        $result = $ukVerifier->verify([
+            'name' => $validated['name'],
+            'gmc_registration_number' => $validated['gmc_registration_number'] ?? null,
+        ]);
+        $this->recordLicenseAttempt([
+            'name' => $validated['name'],
+            'license_state' => 'UK',
+            'license_type' => 'GMC Registration',
+            'license_number' => $validated['gmc_registration_number'] ?? null,
+        ], $result);
+
+        return response()->json([
+            'success' => $result['status'] === 'verified',
+            'status' => $result['status'],
+            'message' => $result['message'],
+            'official_data' => $result['official_data'],
+        ], $result['status'] === 'failed' ? 422 : 200);
+    }
+
+    public function verifyMassachusettsLicense(Request $request, Doctor $doctor, MassachusettsLicenseVerificationService $licenseVerifier)
+    {
+        abort_unless($request->user()?->role === 'admin', 403);
+        abort_unless($doctor->license_state === 'MA', 404);
+
+        $application = [
+            'name' => $doctor->user->name,
+            'license_state' => $doctor->license_state,
+            'license_type' => $doctor->license_type,
+            'license_number' => $doctor->license_number,
+            'license_issue_date' => $doctor->license_issue_date?->toDateString(),
+            'license_expiration_date' => $doctor->license_expiration_date?->toDateString(),
+        ];
+        $result = $licenseVerifier->verify($application);
+        $isDefinitiveFailure = in_array($result['status'], ['failed', 'expired', 'manual_review'], true);
+
+        DB::transaction(function () use ($doctor, $application, $result, $request, $isDefinitiveFailure) {
+            $doctor->update([
+                'is_verified' => $result['status'] === 'verified' ? true : ($isDefinitiveFailure ? false : $doctor->is_verified),
+                'verification_status' => $isDefinitiveFailure ? 'rejected' : $doctor->verification_status,
+                'license_verification_status' => $result['status'],
+                'official_license_status' => $result['official_data']['status'] ?? $doctor->official_license_status,
+                'official_license_issue_date' => $result['official_data']['issue_date'] ?? $doctor->official_license_issue_date,
+                'official_license_expiration_date' => $result['official_data']['expiration_date'] ?? $doctor->official_license_expiration_date,
+                'license_verification_data' => $result['official_data'] ?? $doctor->license_verification_data,
+                'license_verification_source' => $result['source'],
+                'license_verification_message' => $result['message'],
+                'license_verified_at' => now(),
+            ]);
+            if ($isDefinitiveFailure) {
+                $doctor->user()->update(['is_active' => false]);
+            }
+            $this->recordLicenseAttempt($application, $result, $doctor, $request->user()->id);
+        });
+
+        return response()->json([
+            'success' => $result['status'] === 'verified',
+            'status' => $result['status'],
+            'message' => $result['message'],
+            'official_data' => $result['official_data'],
+            'checked_at' => $doctor->fresh()->license_verified_at?->toIso8601String(),
+        ], $result['status'] === 'verified' ? 200 : 422);
+    }
+
+    public function verifyUkRegistration(Request $request, Doctor $doctor, GmcUkVerificationService $ukVerifier)
+    {
+        abort_unless($request->user()?->role === 'admin', 403);
+        abort_unless($doctor->license_state === 'UK', 404);
+
+        $result = $ukVerifier->verify([
+            'name' => $doctor->user->name,
+            'gmc_registration_number' => $doctor->uk_gmc_number ?? $doctor->license_number,
+        ]);
+
+        $isDefinitiveFailure = in_array($result['status'], ['failed', 'manual_review'], true);
+
+        DB::transaction(function () use ($doctor, $result, $request, $isDefinitiveFailure) {
+            $doctor->update([
+                'is_verified' => $result['status'] === 'verified' ? true : ($isDefinitiveFailure ? false : $doctor->is_verified),
+                'verification_status' => $result['status'] === 'verified'
+                    ? 'approved'
+                    : ($isDefinitiveFailure ? 'rejected' : $doctor->verification_status),
+                'license_verification_status' => $result['status'],
+                'license_verification_message' => $result['message'],
+                'license_verification_source' => $result['source'],
+                'license_verification_data' => $result['official_data'] ?? $doctor->license_verification_data,
+                'license_verified_at' => in_array($result['status'], ['verified', 'failed', 'manual_review'], true)
+                    ? now()
+                    : $doctor->license_verified_at,
+                'uk_verification_status' => $result['status'],
+                'uk_gmc_number' => $result['official_data']['gmc_number'] ?? $doctor->uk_gmc_number ?? $doctor->license_number,
+                'uk_verified_name' => $result['official_data']['full_name'] ?? $doctor->uk_verified_name ?? $doctor->user->name,
+                'uk_profile_url' => $result['official_data']['profile_url'] ?? $doctor->uk_profile_url,
+                'uk_registration_status' => $result['official_data']['registration_status'] ?? $doctor->uk_registration_status,
+                'uk_licence_status' => $result['official_data']['licence_status'] ?? $doctor->uk_licence_status,
+                'uk_verification_data' => $result['official_data'] ?? $doctor->uk_verification_data,
+                'uk_verification_source' => $result['source'],
+                'uk_verification_message' => $result['message'],
+                'uk_verified_at' => in_array($result['status'], ['verified'], true) ? now() : $doctor->uk_verified_at,
+            ]);
+            if ($result['status'] === 'verified') {
+                $doctor->user()->update(['is_active' => true]);
+            } elseif ($isDefinitiveFailure) {
+                $doctor->user()->update(['is_active' => false]);
+            }
+
+            $this->recordLicenseAttempt([
+                'name' => $doctor->user->name,
+                'license_state' => 'UK',
+                'license_type' => 'GMC Registration',
+                'license_number' => $doctor->uk_gmc_number ?? $doctor->license_number,
+            ], $result, $doctor, $request->user()->id);
+        });
+
+        return response()->json([
+            'success' => $result['status'] === 'verified',
+            'status' => $result['status'],
+            'message' => $result['message'],
+            'official_data' => $result['official_data'],
+            'checked_at' => $doctor->fresh()->uk_verified_at?->toIso8601String(),
+        ], $result['status'] === 'verified' ? 200 : 422);
+    }
+
+    private function recordLicenseAttempt(array $application, array $result, ?Doctor $doctor = null, ?int $actorUserId = null): void
+    {
+        LicenseVerificationAttempt::create([
+            'doctor_id' => $doctor?->id,
+            'actor_user_id' => $actorUserId,
+            'applicant_name' => $application['name'] ?? 'Unknown',
+            'license_state' => $application['license_state'] ?? 'UK',
+            'license_type' => $application['license_type'] ?? 'GMC Registration',
+            'license_number' => $application['license_number'] ?? '',
+            'status' => $result['status'],
+            'message' => $result['message'],
+            'source' => $result['source'],
+            'official_data' => $result['official_data'],
+            'checked_at' => now(),
+        ]);
+    }
 
     public function show(Doctor $doctor)
     {
@@ -225,7 +468,17 @@ public function updateVerification(Request $request)
         'verification_status' => 'pending',
         'is_verified' => false,
         'ai_result' => null,
+        'license_verification_status' => $doctor->license_state === 'MA' ? 'pending' : $doctor->license_verification_status,
+        'official_license_status' => $doctor->license_state === 'MA' ? null : $doctor->official_license_status,
+        'official_license_issue_date' => $doctor->license_state === 'MA' ? null : $doctor->official_license_issue_date,
+        'official_license_expiration_date' => $doctor->license_state === 'MA' ? null : $doctor->official_license_expiration_date,
+        'license_verification_data' => $doctor->license_state === 'MA' ? null : $doctor->license_verification_data,
+        'license_verification_message' => $doctor->license_state === 'MA' ? 'License details changed and require a fresh verification.' : $doctor->license_verification_message,
+        'license_verified_at' => $doctor->license_state === 'MA' ? null : $doctor->license_verified_at,
     ]);
+    if ($doctor->license_state === 'MA') {
+        $doctor->user()->update(['is_active' => false]);
+    }
 
     return response()->json([
         'success' => true,

@@ -388,6 +388,15 @@
                 </div>
                 <div class="action-toolbar">
 
+                    @if($doctor->license_state === 'UK')
+                        <a href="{{ route('doctor.profile', ['doctor' => $doctor->id]) }}"
+                           class="btn btn-info action-btn"
+                           title="Review UK registration"
+                           data-bs-toggle="tooltip"
+                           data-bs-placement="top">
+                            <i class="ti ti-user-search"></i>
+                        </a>
+                    @endif
                     @if(!$doctor->ai_result)
                         <a href="{{ route('ai.doctor.analyze', $doctor->id) }}"
                            class="btn btn-info action-btn"

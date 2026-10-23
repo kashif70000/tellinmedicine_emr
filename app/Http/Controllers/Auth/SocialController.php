@@ -39,11 +39,22 @@ class SocialController extends Controller
                 ]);
             }
 
+            $doctor = $user->doctor;
+            $licenseStatus = $doctor?->license_verification_status;
+            $isUnavailableWithExistingAccess = $licenseStatus === 'unable_to_verify' && $user->is_active;
+            if ($user->role === 'doctor' && $doctor?->license_state === 'MA' && $licenseStatus !== 'verified' && ! $isUnavailableWithExistingAccess) {
+                return redirect('/login')->withErrors(['email' => 'Massachusetts physician licensure must be verified before doctor access is enabled.']);
+            }
+
             Auth::login($user);
 
             $uuid = $user->ensureUuid();
 
             return redirect("/profile/{$uuid}");
+        }
+
+        if ($role === 'doctor') {
+            return redirect('/register/doctor')->withErrors(['email' => 'Doctor accounts must use the license verification registration process.']);
         }
 
         if (!$user) {
@@ -112,11 +123,22 @@ public function handleFacebookCallback()
                 ]);
             }
 
+            $doctor = $user->doctor;
+            $licenseStatus = $doctor?->license_verification_status;
+            $isUnavailableWithExistingAccess = $licenseStatus === 'unable_to_verify' && $user->is_active;
+            if ($user->role === 'doctor' && $doctor?->license_state === 'MA' && $licenseStatus !== 'verified' && ! $isUnavailableWithExistingAccess) {
+                return redirect('/login')->withErrors(['email' => 'Massachusetts physician licensure must be verified before doctor access is enabled.']);
+            }
+
             Auth::login($user);
 
             $uuid = $user->ensureUuid();
 
             return redirect("/profile/{$uuid}");
+        }
+
+        if ($role === 'doctor') {
+            return redirect('/register/doctor')->withErrors(['email' => 'Doctor accounts must use the license verification registration process.']);
         }
 
         if (!$user) {
