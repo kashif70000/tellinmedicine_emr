@@ -341,9 +341,12 @@
                                         </div>
                                     <div class="col-md-12">
                                         <label class="form-label" for="doctor-license-state">License Jurisdiction</label>
-                                        <select id="doctor-license-state" name="license_state" class="form-select" required>
-                                            <option value="">Select license jurisdiction</option>
+                                        <select id="doctor-license-state" name="license_state" class="form-select" data-us-states="{{ implode(',', config('uslicensecheck.supported_states', [])) }}" required>
+                                            <option value="">Select your license state</option>
                                             <option value="MA">Massachusetts (MA)</option>
+                                            @foreach(config('uslicensecheck.supported_states', []) as $stateCode)
+                                                <option value="{{ $stateCode }}">{{ config('uslicensecheck.states.' . $stateCode) }} ({{ $stateCode }})</option>
+                                            @endforeach
                                             <option value="UK">United Kingdom (UK)</option>
                                         </select>
                                     </div>
@@ -366,14 +369,17 @@
                                                 <label class="form-label" for="doctor-license-expiration-date">License Expiration Date</label>
                                                 <input id="doctor-license-expiration-date" name="license_expiration_date" type="date" class="form-control">
                                             </div>
-                                            <div class="col-12">
-                                                <div id="doctor-license-result" class="alert alert-secondary mt-3 mb-0 d-none" role="status" aria-live="polite"></div>
-                                            </div>
                                         </div>
+                                    </div>
+                                    <div id="us-license-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">License details are checked against USLicenseCheck data. Incomplete or ambiguous records will be referred for administrative review.</p>
                                     </div>
                                     <div id="uk-registration-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">GMC registration is checked using your full name and GMC number. Both are required for verification.</p>
                                         <div id="doctor-uk-registration-result" class="alert alert-secondary mt-3 mb-0 d-none" role="status" aria-live="polite"></div>
+                                    </div>
+                                    <div class="col-12">
+                                        <div id="doctor-license-result" class="alert alert-secondary mt-3 mb-0 d-none" role="status" aria-live="polite"></div>
                                     </div>
                                     <div class="col-md-12">
                                         <label id="doctor-license-number-label" class="form-label">License Number</label>

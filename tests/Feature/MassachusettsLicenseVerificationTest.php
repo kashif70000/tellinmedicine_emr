@@ -164,6 +164,10 @@ class MassachusettsLicenseVerificationTest extends TestCase
 
     public function test_registration_without_verified_license_is_blocked_by_default(): void
     {
+        Http::fake([
+            'https://api.medboard.mass.gov/api-public/search' => Http::response(['error' => 'unavailable'], 503),
+        ]);
+
         $response = $this->postJson(route('register.doctor.store'), $this->application());
 
         $response->assertStatus(422)->assertJsonPath('status', 'unable_to_verify');
