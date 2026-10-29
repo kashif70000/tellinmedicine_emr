@@ -88,6 +88,7 @@ class GmcUkRegistrationTest extends TestCase
 
         $response = $this->postJson(route('register.doctor.verify-uk-registration'), [
             'name' => 'Alice Smith',
+            'gmc_registration_number' => '1234567',
         ]);
 
         $response->assertOk()

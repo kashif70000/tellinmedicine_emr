@@ -50,7 +50,9 @@
                             $licenseVerificationStatus = match ($doctor->license_state) {
                                 'MA' => $doctor->license_verification_status,
                                 'UK' => $doctor->uk_verification_status ?? ($doctor->is_verified ? 'verified' : 'pending'),
-                                default => 'not_applicable',
+                                default => in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true)
+                                    ? $doctor->license_verification_status
+                                    : 'not_applicable',
                             };
                         @endphp
                         <tr>
@@ -88,8 +90,8 @@
                                         <a href="{{ route('doctor.profile', $doctor) }}" class="btn btn-outline-info" title="Open doctor profile">
                                             <i class="ti ti-user-cog"></i>
                                         </a>
-                                        @if($doctor->license_state === 'MA')
-                                            <button type="button" class="btn btn-outline-primary verify-license-button" data-url="{{ route('admin.doctors.license.verify', $doctor) }}" title="Verify Massachusetts license"><i class="ti ti-refresh"></i></button>
+                                        @if($doctor->license_state === 'MA' || in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
+                                            <button type="button" class="btn btn-outline-primary verify-license-button" data-url="{{ route('admin.doctors.license.verify', $doctor) }}" title="Verify {{ $doctor->license_state }} license"><i class="ti ti-refresh"></i></button>
                                         @elseif($doctor->license_state === 'UK')
                                             <button type="button" class="btn btn-outline-success verify-license-button" data-url="{{ route('admin.doctors.uk.verify', $doctor) }}" title="Verify GMC registration"><i class="ti ti-shield-check"></i></button>
                                         @else
@@ -185,7 +187,7 @@
 
             if (USER_ROLE === 'admin') {
                 if (doctor.license_verify_url) {
-                    actions += `<button type="button" class="btn btn-outline-primary verify-license-button" data-url="${doctor.license_verify_url}" title="Verify Massachusetts license"><i class="ti ti-refresh"></i></button>`;
+                    actions += `<button type="button" class="btn btn-outline-primary verify-license-button" data-url="${doctor.license_verify_url}" title="Verify ${esc(doctor.license_state)} license"><i class="ti ti-refresh"></i></button>`;
                 } else if (doctor.uk_verify_url) {
                     actions += `<button type="button" class="btn btn-outline-success verify-license-button" data-url="${doctor.uk_verify_url}" title="Verify GMC registration"><i class="ti ti-shield-check"></i></button>`;
                 } else {

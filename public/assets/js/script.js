@@ -1591,14 +1591,18 @@ document.addEventListener('DOMContentLoaded', function () {
     const submitButton = document.getElementById('doctor-submit');
 	const licenseState = document.getElementById('doctor-license-state');
 	const massachusettsFields = document.getElementById('massachusetts-license-fields');
+	const usLicenseFields = document.getElementById('us-license-fields');
 	const verifyLicenseButton = document.getElementById('doctor-verify-license');
 	const licenseResult = document.getElementById('doctor-license-result');
 	const ukRegistrationFields = document.getElementById('uk-registration-fields');
 	const verifyUkRegistrationButton = document.getElementById('doctor-verify-uk-registration');
 	const ukRegistrationResult = document.getElementById('doctor-uk-registration-result');
 	let massachusettsLicenseVerified = false;
+	let usLicenseVerified = false;
+	let usLicenseReviewPending = false;
 	let ukRegistrationVerified = false;
 	let ukRegistrationReviewPending = false;
+	const usLicenseStates = (licenseState?.dataset.usStates || '').split(',').filter(Boolean);
 
     // ❗ Prevent errors on other pages
     if (!step1 || !step2) return;
@@ -1669,7 +1673,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function validateStep2() {
 		const isUk = licenseState?.value === 'UK';
-        const licenseValid = validateRequiredFields(['doctor-license']);
+        const isUsLicenseCheck = usLicenseStates.includes(licenseState?.value);
+        const licenseValid = validateRequiredFields(['doctor-license-state', 'doctor-license']);
         const certificateField = document.getElementById('doctor-certificate');
 
 		if (licenseState?.value === 'MA') {
@@ -1683,6 +1688,10 @@ document.addEventListener('DOMContentLoaded', function () {
 				showLicenseResult('Please verify this Massachusetts license before submitting registration.', 'warning');
 				return false;
 			}
+		}
+		if (isUsLicenseCheck && !usLicenseVerified && !usLicenseReviewPending) {
+			showLicenseResult('Verify this license before submitting. If the result is inconclusive, you may submit for administrative review.', 'warning');
+			return false;
 		}
 		if (isUk && !ukRegistrationVerified && !ukRegistrationReviewPending) {
 			showUkRegistrationResult('Please verify your GMC registration using your name before submitting.', 'warning');
@@ -1734,8 +1743,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
 	function updateLicenseStateFields() {
 		const isMassachusetts = licenseState?.value === 'MA';
+		const isUsLicenseCheck = usLicenseStates.includes(licenseState?.value);
 		const isUk = licenseState?.value === 'UK';
 		massachusettsFields?.classList.toggle('d-none', !isMassachusetts);
+		usLicenseFields?.classList.toggle('d-none', !isUsLicenseCheck);
 		ukRegistrationFields?.classList.toggle('d-none', !isUk);
 		['doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date'].forEach(id => {
 			const field = document.getElementById(id);
@@ -1743,7 +1754,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		});
 		const licenseNumber = document.getElementById('doctor-license');
 		const licenseNumberLabel = document.getElementById('doctor-license-number-label');
-		verifyLicenseButton?.classList.toggle('d-none', !isMassachusetts);
+		verifyLicenseButton?.classList.toggle('d-none', !(isMassachusetts || isUsLicenseCheck));
 		verifyUkRegistrationButton?.classList.toggle('d-none', !isUk);
 		if (licenseNumber) {
 			licenseNumber.required = true;
@@ -1752,8 +1763,10 @@ document.addEventListener('DOMContentLoaded', function () {
 		if (licenseNumberLabel) {
 			licenseNumberLabel.textContent = isUk ? 'GMC Number' : 'License Number';
 		}
-		if (skipButton) skipButton.classList.toggle('d-none', isMassachusetts || isUk);
+		if (skipButton) skipButton.classList.toggle('d-none', isMassachusetts || isUsLicenseCheck || isUk);
 		massachusettsLicenseVerified = false;
+		usLicenseVerified = false;
+		usLicenseReviewPending = false;
 		ukRegistrationVerified = false;
 		ukRegistrationReviewPending = false;
 		if (licenseResult) licenseResult.classList.add('d-none');
@@ -1791,6 +1804,8 @@ document.addEventListener('DOMContentLoaded', function () {
 	['doctor-name', 'doctor-license', 'doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date'].forEach(id => {
 		document.getElementById(id)?.addEventListener('input', () => {
 			massachusettsLicenseVerified = false;
+			usLicenseVerified = false;
+			usLicenseReviewPending = false;
 			ukRegistrationVerified = false;
 			ukRegistrationReviewPending = false;
 			if (licenseResult) licenseResult.classList.add('d-none');
@@ -1798,6 +1813,8 @@ document.addEventListener('DOMContentLoaded', function () {
 		});
 		document.getElementById(id)?.addEventListener('change', () => {
 			massachusettsLicenseVerified = false;
+			usLicenseVerified = false;
+			usLicenseReviewPending = false;
 			ukRegistrationVerified = false;
 			ukRegistrationReviewPending = false;
 			if (licenseResult) licenseResult.classList.add('d-none');
@@ -1807,18 +1824,29 @@ document.addEventListener('DOMContentLoaded', function () {
 	updateLicenseStateFields();
 
 	verifyLicenseButton?.addEventListener('click', async function () {
-		const required = validateRequiredFields([
-			'doctor-name',
-			'doctor-license',
-			'doctor-license-type',
-			'doctor-license-issue-date',
-			'doctor-license-expiration-date'
-		]);
+		const isMassachusetts = licenseState.value === 'MA';
+		const requiredFields = ['doctor-name', 'doctor-license'];
+		if (isMassachusetts) {
+			requiredFields.push('doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date');
+		}
+		const required = validateRequiredFields(requiredFields);
 		if (!required) return;
 
 		verifyLicenseButton.disabled = true;
-		showLicenseResult('Checking the official Massachusetts license source...', 'secondary');
+		showLicenseResult(isMassachusetts
+			? 'Checking the official Massachusetts license source...'
+			: 'Checking the selected state license using USLicenseCheck...', 'secondary');
 		try {
+			const verificationRequest = {
+				name: document.getElementById('doctor-name').value,
+				license_state: licenseState.value,
+				license_number: document.getElementById('doctor-license').value
+			};
+			if (isMassachusetts) {
+				verificationRequest.license_type = document.getElementById('doctor-license-type').value;
+				verificationRequest.license_issue_date = document.getElementById('doctor-license-issue-date').value;
+				verificationRequest.license_expiration_date = document.getElementById('doctor-license-expiration-date').value;
+			}
 			const response = await fetch('/register/doctor/verify-license', {
 				method: 'POST',
 				headers: {
@@ -1826,27 +1854,33 @@ document.addEventListener('DOMContentLoaded', function () {
 					'Accept': 'application/json',
 					'Content-Type': 'application/json'
 				},
-				body: JSON.stringify({
-					name: document.getElementById('doctor-name').value,
-					license_state: licenseState.value,
-					license_number: document.getElementById('doctor-license').value,
-					license_type: document.getElementById('doctor-license-type').value,
-					license_issue_date: document.getElementById('doctor-license-issue-date').value,
-					license_expiration_date: document.getElementById('doctor-license-expiration-date').value
-				})
+				body: JSON.stringify(verificationRequest)
 			});
 			const result = await response.json();
-			massachusettsLicenseVerified = result.success === true && result.status === 'verified';
-			const message = massachusettsLicenseVerified
-				? 'Massachusetts license verification succeeded.'
-				: result.status === 'manual_review'
-					? 'License requires administrative review.'
-					: result.status === 'unable_to_verify'
-						? 'Unable to verify right now. Please retry.'
-						: 'License verification failed. Check the submitted information.';
-			showLicenseResult(message, massachusettsLicenseVerified ? 'success' : 'warning');
+			if (isMassachusetts) {
+				massachusettsLicenseVerified = result.success === true && result.status === 'verified';
+				const message = massachusettsLicenseVerified
+					? 'Massachusetts license verification succeeded.'
+					: result.status === 'manual_review'
+						? 'License requires administrative review.'
+						: result.status === 'unable_to_verify'
+							? 'Unable to verify right now. Please retry.'
+							: 'License verification failed. Check the submitted information.';
+				showLicenseResult(message, massachusettsLicenseVerified ? 'success' : 'warning');
+			} else {
+				usLicenseVerified = result.success === true && result.status === 'verified';
+				usLicenseReviewPending = ['manual_review', 'unable_to_verify', 'unavailable'].includes(result.status);
+				const message = usLicenseVerified
+					? result.message
+					: usLicenseReviewPending
+						? `${result.message || 'The provider could not confirm this record.'} You may submit the application for administrative review; it will remain unverified.`
+						: result.message || 'The license could not be verified. Check the submitted information.';
+				showLicenseResult(message, usLicenseVerified ? 'success' : (usLicenseReviewPending ? 'info' : 'warning'));
+			}
 		} catch (error) {
 			massachusettsLicenseVerified = false;
+			usLicenseVerified = false;
+			usLicenseReviewPending = false;
 			showLicenseResult('Unable to Verify: the verification service could not be reached.', 'warning');
 		} finally {
 			verifyLicenseButton.disabled = false;
