@@ -25,6 +25,7 @@
                             <option value="">Select a country</option>
                             <option value="US">United States</option>
                             <option value="PK">Pakistan</option>
+                            <option value="IN">India</option>
                         </select>
                         <div class="invalid-feedback" data-error-for="country"></div>
                     </div>
@@ -112,6 +113,7 @@
 
     function updateFields() {
         const isUnitedStates = country.value === 'US';
+        const isIndia = country.value === 'IN';
         const isMassachusetts = isUnitedStates && state.value === 'MA';
 
         stateGroup.classList.toggle('d-none', !isUnitedStates);
@@ -128,6 +130,12 @@
                 input.value = '';
             }
         });
+
+        if (isIndia) {
+            document.getElementById('license-state').required = false;
+            document.getElementById('license-type').required = false;
+        }
+
         clearErrors();
         clearResult();
     }
@@ -165,6 +173,8 @@
         return [
             'found',
             'source',
+            'sourceresponse',
+            'rawresponse',
             'error',
             'multiple',
             'rawstatus',

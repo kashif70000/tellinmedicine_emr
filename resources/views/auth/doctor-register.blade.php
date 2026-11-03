@@ -346,6 +346,7 @@
                                             <option value="US">United States</option>
                                             <option value="UK">United Kingdom</option>
                                             <option value="PK">Pakistan</option>
+                                            <option value="IN">India</option>
                                         </select>
                                         <div class="invalid-feedback">Select your country</div>
                                     </div>

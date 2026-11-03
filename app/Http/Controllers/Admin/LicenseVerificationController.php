@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Services\IndiaNmcLicenseVerificationService;
 use App\Services\MassachusettsLicenseVerificationService;
 use App\Services\PmdcLicenseVerificationService;
 use App\Services\USLicenseCheckVerificationService;
@@ -28,7 +29,8 @@ class LicenseVerificationController extends Controller
     public function verify(
         Request $request,
         MassachusettsLicenseVerificationService $massachusettsVerifier,
-        USLicenseCheckVerificationService $usLicenseVerifier
+        USLicenseCheckVerificationService $usLicenseVerifier,
+        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier
     ) {
         abort_unless($request->user()?->role === 'admin', 403);
 
@@ -37,29 +39,35 @@ class LicenseVerificationController extends Controller
             static fn (string $state): bool => $state !== 'KS'
         ));
         $supportedStates = array_values(array_unique(array_merge(['MA'], $supportedStates)));
+        $country = strtoupper((string) $request->input('country'));
         $isMassachusetts = $request->input('state') === 'MA';
+        $isIndia = $country === 'IN';
 
         $validated = $request->validate([
-            'country' => ['required', Rule::in(['US'])],
-            'state' => ['required', 'string', Rule::in($supportedStates)],
+            'country' => ['required', Rule::in(['US', 'IN'])],
+            'state' => [$isIndia ? 'nullable' : 'required', 'string', Rule::in($isIndia ? ['IN'] : $supportedStates)],
             'license_number' => ['required', 'string', 'max:255'],
             'license_type' => [$isMassachusetts ? 'required' : 'nullable', Rule::in(['Full Physician', 'Limited Physician', 'Temporary Physician'])],
             'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
             'license_expiration_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'after:license_issue_date'],
         ]);
 
-        $verification = $isMassachusetts
-            ? $massachusettsVerifier->verify([
+        if ($isIndia) {
+            $verification = $indiaNmcLicenseVerifier->verify($validated['license_number']);
+        } elseif ($isMassachusetts) {
+            $verification = $massachusettsVerifier->verify([
                 'license_state' => 'MA',
                 'license_number' => $validated['license_number'],
                 'license_type' => $validated['license_type'],
                 'license_issue_date' => $validated['license_issue_date'],
                 'license_expiration_date' => $validated['license_expiration_date'],
-            ])
-            : $usLicenseVerifier->verify([
+            ]);
+        } else {
+            $verification = $usLicenseVerifier->verify([
                 'license_state' => $validated['state'],
                 'license_number' => $validated['license_number'],
             ]);
+        }
 
         return response()->json([
             'success' => $verification['status'] === 'verified',
