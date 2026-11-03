@@ -339,16 +339,27 @@
                                                 Allowed formats: PDF, JPG, PNG (Max 5MB)
                                             </small>
                                         </div>
-                                    <div class="col-md-12">
-                                        <label class="form-label" for="doctor-license-state">License Jurisdiction</label>
+                                    <div id="doctor-license-country-group" class="col-md-6">
+                                        <label class="form-label" for="doctor-license-country">Country</label>
+                                        <select id="doctor-license-country" class="form-select" required>
+                                            <option value="">Select your country</option>
+                                            <option value="US">United States</option>
+                                            <option value="UK">United Kingdom</option>
+                                            <option value="PK">Pakistan</option>
+                                        </select>
+                                        <div class="invalid-feedback">Select your country</div>
+                                    </div>
+                                    <div id="doctor-license-state-group" class="col-md-6">
+                                        <label class="form-label" for="doctor-license-state">State</label>
                                         <select id="doctor-license-state" name="license_state" class="form-select" data-us-states="{{ implode(',', config('uslicensecheck.supported_states', [])) }}" required>
                                             <option value="">Select your license state</option>
                                             <option value="MA">Massachusetts (MA)</option>
                                             @foreach(config('uslicensecheck.supported_states', []) as $stateCode)
                                                 <option value="{{ $stateCode }}">{{ config('uslicensecheck.states.' . $stateCode) }} ({{ $stateCode }})</option>
                                             @endforeach
-                                            <option value="UK">United Kingdom (UK)</option>
+                                            <option value="UK" data-country="UK">United Kingdom (UK)</option>
                                         </select>
+                                        <div class="invalid-feedback">Select your license state</div>
                                     </div>
                                     <div id="massachusetts-license-fields" class="col-12 d-none">
                                         <div class="row g-3">
@@ -373,6 +384,9 @@
                                     </div>
                                     <div id="us-license-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">License details are checked against USLicenseCheck data. Incomplete or ambiguous records will be referred for administrative review.</p>
+                                    </div>
+                                    <div id="pmdc-license-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">Enter your PMDC registration number to verify your active registration.</p>
                                     </div>
                                     <div id="uk-registration-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">GMC registration is checked using your full name and GMC number. Both are required for verification.</p>
@@ -404,7 +418,7 @@
                                     <button id="doctor-back" type="button" class="btn btn-outline-success">Back</button>
                                     <div class="d-flex gap-2">
                                         <button id="doctor-skip" type="button" class="btn btn-outline-success d-none">Skip for Now</button>
-                                        <button id="doctor-verify-license" type="button" class="btn btn-outline-success d-none"><i class="ti ti-shield-check me-1"></i>Verify License</button>
+                                        <button id="doctor-verify-license" type="button" class="btn btn-outline-success d-none"><i class="ti ti-shield-check me-1"></i><span id="doctor-verify-license-label">Verify License</span></button>
                                         <button id="doctor-verify-uk-registration" type="button" class="btn btn-outline-success d-none"><i class="ti ti-shield-check me-1"></i>Verify GMC Registration</button>
                                         <button id="doctor-submit" type="button" class="btn bg-success text-white">Submit</button>
                                     </div>

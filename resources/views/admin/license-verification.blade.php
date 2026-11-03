@@ -7,7 +7,7 @@
     <div class="page-header mb-4">
         <div>
             <h3 class="page-title">License Verification</h3>
-            <p class="text-muted mb-0">Independently verify a physician license using the existing state licensing sources.</p>
+            <p class="text-muted mb-0">Independently verify a physician license using the official licensing source for its country.</p>
         </div>
     </div>
 
@@ -24,6 +24,7 @@
                         <select id="license-country" name="country" class="form-select" required>
                             <option value="">Select a country</option>
                             <option value="US">United States</option>
+                            <option value="PK">Pakistan</option>
                         </select>
                         <div class="invalid-feedback" data-error-for="country"></div>
                     </div>
@@ -115,6 +116,7 @@
 
         stateGroup.classList.toggle('d-none', !isUnitedStates);
         state.required = isUnitedStates;
+        state.disabled = !isUnitedStates;
         if (!isUnitedStates) {
             state.value = '';
         }
@@ -221,6 +223,8 @@
         const statusStyles = {
             verified: ['success', 'Verified'],
             failed: ['danger', 'Not Verified'],
+            not_found: ['danger', 'Not Found'],
+            inactive: ['danger', 'Inactive'],
             expired: ['danger', 'Expired'],
             manual_review: ['warning', 'Manual Review Required'],
             unable_to_verify: ['warning', 'Unable to Verify'],
@@ -285,7 +289,10 @@
         loading.classList.remove('d-none');
 
         try {
-            const response = await fetch(@json(route('admin.license-verification.verify')), {
+            const endpoint = country.value === 'PK'
+                ? @json(route('admin.license-verification.verify-pmdc'))
+                : @json(route('admin.license-verification.verify'));
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Accept': 'application/json',

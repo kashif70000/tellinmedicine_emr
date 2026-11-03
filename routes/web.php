@@ -56,6 +56,9 @@ Route::post('/register/doctor', [DoctorController::class, 'store'])
 Route::post('/register/doctor/verify-license', [DoctorController::class, 'verifyRegistrationLicense'])
     ->middleware('throttle:6,1')
     ->name('register.doctor.verify-license');
+Route::post('/register/doctor/verify-pmdc', [DoctorController::class, 'verifyRegistrationPmdc'])
+    ->middleware('throttle:6,1')
+    ->name('register.doctor.verify-pmdc');
 Route::post('/register/doctor/verify-uk-registration', [DoctorController::class, 'verifyRegistrationUk'])
     ->middleware('throttle:6,1')
     ->name('register.doctor.verify-uk-registration');
@@ -332,6 +335,9 @@ Route::middleware(['auth'])->prefix('admin')->group(function () {
     Route::post('/license-verification/verify', [LicenseVerificationController::class, 'verify'])
         ->middleware('throttle:10,1')
         ->name('admin.license-verification.verify');
+    Route::post('/license-verification/verify-pmdc', [LicenseVerificationController::class, 'verifyPmdc'])
+        ->middleware('throttle:10,1')
+        ->name('admin.license-verification.verify-pmdc');
 
     Route::get('/npi-verification', [NpiVerificationController::class, 'index'])
     ->name('admin.npi.index');

@@ -42,6 +42,7 @@ class GmcUkRegistrationTest extends TestCase
             'fees' => 125,
             'clinic_name' => 'London Clinic',
             'address' => 'London',
+            'license_country' => 'UK',
             'license_state' => 'UK',
             'license_number' => '1234567',
             'certificate' => UploadedFile::fake()->create('certificate.pdf', 20, 'application/pdf'),

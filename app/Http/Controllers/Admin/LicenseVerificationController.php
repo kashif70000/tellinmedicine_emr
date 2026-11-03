@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Services\MassachusettsLicenseVerificationService;
+use App\Services\PmdcLicenseVerificationService;
 use App\Services\USLicenseCheckVerificationService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -66,6 +67,24 @@ class LicenseVerificationController extends Controller
             'message' => $verification['message'],
             'source' => $verification['source'] ?? null,
             'official_data' => $verification['official_data'] ?? null,
+        ]);
+    }
+
+    public function verifyPmdc(Request $request, PmdcLicenseVerificationService $pmdcLicenseVerifier)
+    {
+        abort_unless($request->user()?->role === 'admin', 403);
+
+        $validated = $request->validate([
+            'license_number' => ['required', 'string', 'max:255'],
+        ]);
+        $verification = $pmdcLicenseVerifier->verify($validated['license_number']);
+
+        return response()->json([
+            'success' => $verification['status'] === 'verified',
+            'status' => $verification['status'],
+            'message' => $verification['message'],
+            'source' => $verification['source'],
+            'official_data' => $verification['official_data'],
         ]);
     }
 }

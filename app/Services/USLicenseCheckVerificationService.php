@@ -41,13 +41,18 @@ class USLicenseCheckVerificationService
             $response = Http::acceptJson()
                 ->asJson()
                 ->withHeaders(['X-API-Key' => $apiKey])
-                ->connectTimeout(max(1, (int) config('uslicensecheck.connect_timeout', 3)))
-                ->timeout(max(1, (int) config('uslicensecheck.timeout', 10)))
+                ->connectTimeout(max(1, (int) config('uslicensecheck.connect_timeout', 15)))
+                ->timeout(max(1, (int) config('uslicensecheck.timeout', 30)))
                 ->post($baseUrl.'/lookup/verify', [
                     'license_number' => $licenseNumber,
                     'source_state' => $state,
                 ]);
-        } catch (ConnectionException) {
+        } catch (ConnectionException $exception) {
+            Log::warning('USLicenseCheck connection failed', [
+                'exception' => $exception::class,
+                'reason' => $exception->getMessage(),
+            ]);
+
             return $this->result('unable_to_verify', 'USLicenseCheck could not be reached. This application requires manual license review.', $source);
         } catch (Throwable) {
             return $this->result('unable_to_verify', 'USLicenseCheck returned an unexpected error. This application requires manual license review.', $source);
@@ -199,8 +204,8 @@ class USLicenseCheckVerificationService
                         },
                     ],
                 ])
-                ->connectTimeout(max(1, (int) config('uslicensecheck.connect_timeout', 3)))
-                ->timeout(max(1, (int) config('uslicensecheck.timeout', 10)));
+                ->connectTimeout(max(1, (int) config('uslicensecheck.connect_timeout', 15)))
+                ->timeout(max(1, (int) config('uslicensecheck.timeout', 30)));
 
             $searchResponse = $request->get($endpoint);
             $this->logKansasResponse('search_page', $endpointHost, $searchResponse->status(), $startedAt, $redirects);
