@@ -27,6 +27,7 @@ class MassachusettsLicenseVerificationTest extends TestCase
             'fees' => 125,
             'clinic_name' => 'Boston Clinic',
             'address' => 'Boston, MA',
+            'license_country' => 'US',
             'license_state' => 'MA',
             'license_type' => 'Full Physician',
             'license_number' => 'MA123456',

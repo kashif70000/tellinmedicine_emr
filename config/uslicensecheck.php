@@ -22,8 +22,8 @@ $supportedStates = array_values(array_intersect(array_keys($states), array_uniqu
 return [
     'base_url' => env('USLICENSECHECK_BASE_URL', 'https://uslicensecheck.com/api/v1'),
     'api_key' => env('USLICENSECHECK_API_KEY', ''),
-    'connect_timeout' => (int) env('USLICENSECHECK_CONNECT_TIMEOUT', 3),
-    'timeout' => (int) env('USLICENSECHECK_TIMEOUT', 10),
+    'connect_timeout' => (int) env('USLICENSECHECK_CONNECT_TIMEOUT', 15),
+    'timeout' => (int) env('USLICENSECHECK_TIMEOUT', 30),
     'states' => $states,
     'supported_states' => $supportedStates,
 ];

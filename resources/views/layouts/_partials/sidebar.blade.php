@@ -174,6 +174,11 @@
                                         <i class="ti ti-file-invoice"></i><span>NPI Verification</span>
                                     </a>
                                 </li>
+                                <li class="{{ $nav('admin.license-verification.*') }}">
+                                    <a href="{{ route('admin.license-verification.index') }}">
+                                        <i class="ti ti-shield-check"></i><span>License Verification</span>
+                                    </a>
+                                </li>
                                 <li class="{{ $nav('admin.directory-scraper.*') }}">
                                     <a href="{{ route('admin.directory-scraper.index') }}">
                                         <i class="ti ti-database"></i><span>Labs & Pharmacies</span>

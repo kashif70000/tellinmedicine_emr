@@ -140,6 +140,25 @@ class USLicenseCheckRegistrationTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_registration_requires_country_and_matching_us_license_state(): void
+    {
+        Http::fake();
+
+        $this->withSession(['_token' => 'test-token'])
+            ->withHeader('X-CSRF-TOKEN', 'test-token')
+            ->postJson(route('register.doctor.store'), $this->application(['license_country' => '']))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('license_country');
+
+        $this->withSession(['_token' => 'test-token'])
+            ->withHeader('X-CSRF-TOKEN', 'test-token')
+            ->postJson(route('register.doctor.store'), $this->application(['license_country' => 'UK']))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('license_state');
+
+        Http::assertNothingSent();
+    }
+
     public function test_admin_can_recheck_a_supported_us_license_using_the_doctor_state(): void
     {
         Http::fake([self::ENDPOINT => Http::response($this->record())]);
@@ -195,6 +214,7 @@ class USLicenseCheckRegistrationTest extends TestCase
             'fees' => 125,
             'clinic_name' => 'Columbus Clinic',
             'address' => 'Columbus, OH',
+            'license_country' => 'US',
             'license_state' => 'OH',
             'license_number' => 'OH123456',
             'certificate' => UploadedFile::fake()->create('certificate.pdf', 20, 'application/pdf'),

@@ -6,6 +6,7 @@ use App\Services\USLicenseCheckVerificationService;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class USLicenseCheckVerificationServiceTest extends TestCase
@@ -253,6 +254,7 @@ class USLicenseCheckVerificationServiceTest extends TestCase
 
     public function test_connection_failure_requires_manual_review_without_exposing_credentials(): void
     {
+        Log::spy();
         Http::fake([
             self::ENDPOINT => static function () {
                 throw new ConnectionException('simulated timeout');
@@ -263,6 +265,12 @@ class USLicenseCheckVerificationServiceTest extends TestCase
 
         $this->assertSame('unable_to_verify', $result['status']);
         $this->assertStringNotContainsString('test-key-not-a-secret', $result['message']);
+        Log::shouldHaveReceived('warning')
+            ->once()
+            ->with('USLicenseCheck connection failed', [
+                'exception' => ConnectionException::class,
+                'reason' => 'simulated timeout',
+            ]);
     }
 
     public function test_missing_api_key_does_not_make_a_request(): void
