@@ -18,10 +18,11 @@ class LicenseVerificationController extends Controller
 
         $states = ['MA' => config('uslicensecheck.states.MA', 'Massachusetts')];
         foreach (config('uslicensecheck.supported_states', []) as $stateCode) {
-            if ($stateCode !== 'KS' && isset(config('uslicensecheck.states')[$stateCode])) {
+            if (isset(config('uslicensecheck.states')[$stateCode])) {
                 $states[$stateCode] = config('uslicensecheck.states.'.$stateCode);
             }
         }
+        $states['KS'] = config('uslicensecheck.states.KS', 'Kansas');
 
         return view('admin.license-verification', compact('states'));
     }
@@ -34,11 +35,10 @@ class LicenseVerificationController extends Controller
     ) {
         abort_unless($request->user()?->role === 'admin', 403);
 
-        $supportedStates = array_values(array_filter(
-            config('uslicensecheck.supported_states', []),
-            static fn (string $state): bool => $state !== 'KS'
-        ));
-        $supportedStates = array_values(array_unique(array_merge(['MA'], $supportedStates)));
+        $supportedStates = array_values(array_unique(array_merge(
+            ['MA', 'KS'],
+            config('uslicensecheck.supported_states', [])
+        )));
         $country = strtoupper((string) $request->input('country'));
         $isMassachusetts = $request->input('state') === 'MA';
         $isIndia = $country === 'IN';

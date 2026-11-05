@@ -23,8 +23,15 @@ class USLicenseCheckRegistrationTest extends TestCase
         config([
             'uslicensecheck.base_url' => 'https://uslicensecheck.test/api/v1',
             'uslicensecheck.api_key' => 'test-key-not-a-secret',
-            'uslicensecheck.supported_states' => ['OH', 'CT', 'CO', 'DE', 'TX', 'IL', 'NH', 'AK', 'WA'],
+            'uslicensecheck.supported_states' => ['OH', 'CT', 'CO', 'DE', 'TX', 'IL', 'NH', 'AK', 'WA', 'KS'],
         ]);
+    }
+
+    public function test_registration_page_lists_kansas_as_a_license_state(): void
+    {
+        $this->get(route('register.doctor'))
+            ->assertOk()
+            ->assertSee('<option value="KS">Kansas (KS)</option>', false);
     }
 
     public function test_matching_us_license_registers_as_verified_and_records_the_attempt(): void

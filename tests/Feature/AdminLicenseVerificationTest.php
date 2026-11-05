@@ -25,7 +25,7 @@ class AdminLicenseVerificationTest extends TestCase
         ]);
     }
 
-    public function test_admin_page_lists_massachusetts_and_configured_states_but_not_kansas(): void
+    public function test_admin_page_lists_massachusetts_and_configured_states_including_kansas(): void
     {
         $request = HttpRequest::create('/admin/license-verification');
         $request->setUserResolver(fn () => $this->user('admin'));
@@ -43,6 +43,7 @@ class AdminLicenseVerificationTest extends TestCase
             'NH' => 'New Hampshire',
             'AK' => 'Alaska',
             'WA' => 'Washington',
+            'KS' => 'Kansas',
         ], $view->getData()['states']);
     }
 
@@ -141,8 +142,9 @@ class AdminLicenseVerificationTest extends TestCase
             ->assertJsonPath('official_data.license_number', 'MA123456');
     }
 
-    public function test_kansas_and_unconfigured_states_are_rejected_without_verification(): void
+    public function test_kansas_is_accepted_and_unconfigured_states_are_rejected(): void
     {
+        $this->withoutMiddleware();
         Http::fake();
         $this->actingAs($this->user('admin'))
             ->postJson(route('admin.license-verification.verify'), [
@@ -150,8 +152,8 @@ class AdminLicenseVerificationTest extends TestCase
                 'state' => 'KS',
                 'license_number' => 'KS123456',
             ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('state');
+            ->assertOk()
+            ->assertJsonPath('source', 'Kansas');
 
         $this->actingAs($this->user('admin'))
             ->postJson(route('admin.license-verification.verify'), [
@@ -161,8 +163,6 @@ class AdminLicenseVerificationTest extends TestCase
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('state');
-
-        Http::assertNothingSent();
     }
 
     public function test_massachusetts_requires_its_existing_license_type_and_date_inputs(): void
