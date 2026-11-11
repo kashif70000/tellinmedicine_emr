@@ -12,6 +12,8 @@ $states = [
     'AK' => 'Alaska',
     'WA' => 'Washington',
     'KS' => 'Kansas',
+    'MT' => 'Montana',
+    'FL' => 'Florida',
 ];
 
 $configuredStates = array_map(
@@ -19,8 +21,12 @@ $configuredStates = array_map(
     explode(',', (string) env('USLICENSECHECK_SUPPORTED_STATES', 'OH,CT,CO,DE,TX,IL,NH,AK,WA,KS'))
 );
 $supportedStates = array_values(array_intersect(array_keys($states), array_unique($configuredStates)));
+$supportedStates = array_values(array_diff($supportedStates, ['MT', 'FL']));
 if (! in_array('KS', $supportedStates, true)) {
     $supportedStates[] = 'KS';
+}
+if (! in_array('NH', $supportedStates, true)) {
+    $supportedStates[] = 'NH';
 }
 
 return [
@@ -30,6 +36,11 @@ return [
     'timeout' => (int) env('USLICENSECHECK_TIMEOUT', 10),
     'kansas_license_verification_url' => env('KANSAS_LICENSE_VERIFICATION_URL', 'https://www.kansas.gov/ssrv-ksbhada/search.html'),
     'kansas_request_cookie' => env('KANSAS_REQUEST_COOKIE', env('REQUEST_COOKIE', '')),
+    'new_hampshire_license_verification_url' => env('NEW_HAMPSHIRE_LICENSE_VERIFICATION_URL', 'https://forms.nh.gov/licenseverification/'),
+    'new_hampshire_request_cookie' => env('REQUEST_COOKIE', env('NEW_HAMPSHIRE_REQUEST_COOKIE', '')),
+    'montana_license_verification_url' => env('MONTANA_LICENSE_VERIFICATION_URL', 'https://ebizws.mt.gov/PUBLICPORTAL/searchform?mylist=licenses'),
+    'florida_connect_timeout' => (int) env('FLORIDA_LICENSE_CONNECT_TIMEOUT', 30),
+    'florida_timeout' => (int) env('FLORIDA_LICENSE_TIMEOUT', 90),
     'states' => $states,
     'supported_states' => $supportedStates,
 ];

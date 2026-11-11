@@ -14,14 +14,22 @@ class AdminLicenseVerificationTest extends TestCase
 {
     private const ENDPOINT = 'https://uslicensecheck.test/api/v1/lookup/verify';
 
+    private const MONTANA_SEARCH_PAGE = 'https://ebizws.mt.gov/PUBLICPORTAL/searchform?mylist=licenses';
+
+    private const MONTANA_VERIFICATION = 'https://ebizws.mt.gov/PUBLICPORTAL/verif';
+
+    private const MONTANA_SEARCH = 'https://ebizws.mt.gov/PUBLICPORTAL/searchform';
+
     protected function setUp(): void
     {
         parent::setUp();
+        $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
 
         config([
             'uslicensecheck.base_url' => 'https://uslicensecheck.test/api/v1',
             'uslicensecheck.api_key' => 'test-key-not-a-secret',
             'uslicensecheck.supported_states' => ['OH', 'CT', 'CO', 'DE', 'TX', 'IL', 'NH', 'AK', 'WA'],
+            'uslicensecheck.montana_license_verification_url' => self::MONTANA_SEARCH_PAGE,
         ]);
     }
 
@@ -44,7 +52,14 @@ class AdminLicenseVerificationTest extends TestCase
             'AK' => 'Alaska',
             'WA' => 'Washington',
             'KS' => 'Kansas',
+            'MT' => 'Montana',
+            'FL' => 'Florida',
         ], $view->getData()['states']);
+
+        $this->actingAs($this->user('admin'))
+            ->get(route('admin.license-verification.index'))
+            ->assertOk()
+            ->assertSee('<option value="MT">Montana (MT)</option>', false);
     }
 
     public function test_non_admin_cannot_access_page_or_verification_endpoint(): void
@@ -98,6 +113,54 @@ class AdminLicenseVerificationTest extends TestCase
             'license_number' => 'OH123456',
             'source_state' => 'OH',
         ]);
+    }
+
+    public function test_admin_new_hampshire_lookup_uses_the_official_portal(): void
+    {
+        $this->withoutMiddleware();
+        $this->fakeNewHampshirePortal();
+
+        $response = $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'US',
+                'state' => 'NH',
+                'license_number' => '15080',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('status', 'verified')
+            ->assertJsonPath('source', 'New Hampshire')
+            ->assertJsonPath('official_data.license_number', '15080')
+            ->assertJsonPath('official_data.profession', 'Medicine');
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST'
+            && $request->url() === 'https://forms.nh.gov/licenseverification/'
+            && $request->data()['t_web_lookup__license_no'] === '15080');
+    }
+
+    public function test_admin_can_verify_montana_license_through_the_existing_lookup_page(): void
+    {
+        $this->withoutMiddleware();
+        $this->fakeMontanaPortal();
+
+        $response = $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'US',
+                'state' => 'MT',
+                'license_number' => '100591',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('status', 'verified')
+            ->assertJsonPath('source', 'Montana')
+            ->assertJsonPath('official_data.licenseNumber', 'MED-PHYS-LIC-100591')
+            ->assertJsonPath('official_data.licenseStatus', 'Active')
+            ->assertJsonPath('official_data.expDate', '03/31/2027')
+            ->assertJsonPath('official_data.expiration_date', '2027-03-31');
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST'
+            && $request->url() === self::MONTANA_SEARCH
+            && $request->data()['licnumber'] === 'MED-PHYS-LIC-100591');
     }
 
     public function test_massachusetts_lookup_uses_existing_verifier_inputs_without_writing_records(): void
@@ -224,5 +287,51 @@ class AdminLicenseVerificationTest extends TestCase
         $user->forceFill(['id' => 1, 'uuid' => '00000001']);
 
         return $user;
+    }
+
+    private function fakeNewHampshirePortal(): void
+    {
+        $searchPage = '<html><form method="post" action="/licenseverification/">
+            <input type="hidden" name="__EVENTTARGET" value="">
+            <input type="hidden" name="__EVENTARGUMENT" value="">
+            <input type="hidden" name="__LASTFOCUS" value="">
+            <input type="hidden" name="__VIEWSTATE" value="view-state">
+            <input type="hidden" name="__VIEWSTATEGENERATOR" value="view-state-generator">
+            <input type="hidden" name="__EVENTVALIDATION" value="event-validation">
+            <input name="t_web_lookup__profession_name">
+            <input name="t_web_lookup__license_type_name">
+            <input name="t_web_lookup__first_name">
+            <input name="t_web_lookup__last_name">
+            <input name="t_web_lookup__license_no">
+            <input name="sch_button">
+            </form></html>';
+        $results = '<html><table id="datagrid_results">
+            <tr><th>Full Name</th><th>Profession</th><th>License Type</th><th>License Number</th><th>License Status</th></tr>
+            <tr><td>CURTIS, JOHN A, Jr</td><td>Medicine</td><td>Physician</td><td>15080</td><td>Active</td></tr>
+            </table></html>';
+
+        Http::fake([
+            'https://forms.nh.gov/licenseverification/' => static function (Request $request) use ($searchPage) {
+                return $request->method() === 'GET'
+                    ? Http::response($searchPage)
+                    : Http::response('', 302, ['Location' => '/licenseverification/SearchResults.aspx']);
+            },
+            'https://forms.nh.gov/licenseverification/SearchResults.aspx' => Http::response($results),
+        ]);
+    }
+
+    private function fakeMontanaPortal(): void
+    {
+        $results = '<html><script>var data = [{"licenseNumber":"<a href=\'licensedetail?altid=MED-PHYS-LIC-100591\'>MED-PHYS-LIC-100591</a>","recordAlias":"Physician License","licenseStatus":"Active","firstName":"Natalia","lastName":"Solenkova","orgName":"","expDate":"03/31/2027","city":"AVENTURA","state":"FL","zip":"33180"}];</script></html>';
+
+        Http::fake([
+            self::MONTANA_SEARCH_PAGE => Http::response(
+                '<html><body><form><input name="licnumber"></form></body></html>',
+                200,
+                ['Set-Cookie' => 'MTSession=fresh-session; Path=/; Secure']
+            ),
+            self::MONTANA_VERIFICATION => Http::response('OK'),
+            self::MONTANA_SEARCH => Http::response($results),
+        ]);
     }
 }

@@ -23,6 +23,8 @@ class LicenseVerificationController extends Controller
             }
         }
         $states['KS'] = config('uslicensecheck.states.KS', 'Kansas');
+        $states['MT'] = config('uslicensecheck.states.MT', 'Montana');
+        $states['FL'] = config('uslicensecheck.states.FL', 'Florida');
 
         return view('admin.license-verification', compact('states'));
     }
@@ -36,7 +38,7 @@ class LicenseVerificationController extends Controller
         abort_unless($request->user()?->role === 'admin', 403);
 
         $supportedStates = array_values(array_unique(array_merge(
-            ['MA', 'KS'],
+            ['MA', 'KS', 'MT', 'FL'],
             config('uslicensecheck.supported_states', [])
         )));
         $country = strtoupper((string) $request->input('country'));

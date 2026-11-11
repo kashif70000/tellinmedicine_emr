@@ -16,22 +16,33 @@ class USLicenseCheckRegistrationTest extends TestCase
 
     private const ENDPOINT = 'https://uslicensecheck.test/api/v1/lookup/verify';
 
+    private const MONTANA_SEARCH_PAGE = 'https://ebizws.mt.gov/PUBLICPORTAL/searchform?mylist=licenses';
+
+    private const MONTANA_VERIFICATION = 'https://ebizws.mt.gov/PUBLICPORTAL/verif';
+
+    private const MONTANA_SEARCH = 'https://ebizws.mt.gov/PUBLICPORTAL/searchform';
+
     protected function setUp(): void
     {
         parent::setUp();
+        $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
 
         config([
             'uslicensecheck.base_url' => 'https://uslicensecheck.test/api/v1',
             'uslicensecheck.api_key' => 'test-key-not-a-secret',
             'uslicensecheck.supported_states' => ['OH', 'CT', 'CO', 'DE', 'TX', 'IL', 'NH', 'AK', 'WA', 'KS'],
+            'uslicensecheck.montana_license_verification_url' => self::MONTANA_SEARCH_PAGE,
         ]);
     }
 
-    public function test_registration_page_lists_kansas_as_a_license_state(): void
+    public function test_registration_page_lists_kansas_and_new_hampshire_as_license_states(): void
     {
         $this->get(route('register.doctor'))
             ->assertOk()
-            ->assertSee('<option value="KS">Kansas (KS)</option>', false);
+            ->assertSee('<option value="KS">Kansas (KS)</option>', false)
+            ->assertSee('<option value="NH">New Hampshire (NH)</option>', false)
+            ->assertSee('<option value="MT">Montana (MT)</option>', false);
+        $this->assertNotContains('MT', config('uslicensecheck.supported_states'));
     }
 
     public function test_matching_us_license_registers_as_verified_and_records_the_attempt(): void
@@ -62,6 +73,85 @@ class USLicenseCheckRegistrationTest extends TestCase
                 'license_number' => 'OH123456',
                 'source_state' => 'OH',
             ]);
+    }
+
+    public function test_matching_new_hampshire_license_registers_using_the_official_portal(): void
+    {
+        $this->fakeNewHampshirePortal();
+
+        $response = $this->postJson(route('register.doctor.store'), $this->application([
+            'license_state' => 'NH',
+            'license_number' => '15080',
+        ]));
+
+        $response->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('verification_pending', false);
+        $this->assertDatabaseHas('doctors', [
+            'license_state' => 'NH',
+            'license_number' => '15080',
+            'license_verification_status' => 'verified',
+            'license_verification_source' => 'New Hampshire',
+            'is_verified' => true,
+            'verification_status' => 'approved',
+        ]);
+        $this->assertDatabaseHas('license_verification_attempts', [
+            'license_state' => 'NH',
+            'license_number' => '15080',
+            'source' => 'New Hampshire',
+            'status' => 'verified',
+        ]);
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST'
+            && $request->url() === 'https://forms.nh.gov/licenseverification/'
+            && $request->data()['t_web_lookup__license_no'] === '15080');
+    }
+
+    public function test_matching_montana_license_registers_and_persists_official_verification_data(): void
+    {
+        $this->withoutMiddleware();
+        $this->fakeMontanaPortal($this->montanaResults());
+
+        $response = $this->postJson(route('register.doctor.store'), $this->application([
+            'license_state' => 'MT',
+            'license_number' => '100591',
+        ]));
+
+        $response->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('verification_pending', false);
+        $this->assertDatabaseHas('doctors', [
+            'license_state' => 'MT',
+            'license_number' => '100591',
+            'license_verification_status' => 'verified',
+            'license_verification_source' => 'Montana',
+            'official_license_status' => 'Active',
+            'official_license_expiration_date' => '2027-03-31',
+            'is_verified' => true,
+            'verification_status' => 'approved',
+        ]);
+        $this->assertDatabaseHas('license_verification_attempts', [
+            'license_state' => 'MT',
+            'license_number' => '100591',
+            'source' => 'Montana',
+            'status' => 'verified',
+        ]);
+        Http::assertSent(fn (Request $request) => $request->url() === self::MONTANA_SEARCH
+            && $request->data()['licnumber'] === 'MED-PHYS-LIC-100591'
+            && $request->data()['firstname'] === ''
+            && $request->data()['lastname'] === '');
+    }
+
+    public function test_montana_registration_verification_does_not_require_a_name(): void
+    {
+        $this->withoutMiddleware();
+        $this->fakeMontanaPortal($this->montanaResults());
+
+        $this->postJson(route('register.doctor.verify-license'), [
+            'license_state' => 'MT',
+            'license_number' => '100591',
+        ])->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('status', 'verified');
     }
 
     public function test_matching_record_returns_verified_from_the_registration_verification_endpoint(): void
@@ -240,5 +330,54 @@ class USLicenseCheckRegistrationTest extends TestCase
             'expiry_date' => now()->addYear()->toDateString(),
             'source_state' => 'OH',
         ], $overrides);
+    }
+
+    private function fakeMontanaPortal(string $resultsHtml): void
+    {
+        Http::fake([
+            self::MONTANA_SEARCH_PAGE => Http::response(
+                '<html><body><form><input name="licnumber"></form></body></html>',
+                200,
+                ['Set-Cookie' => 'MTSession=fresh-session; Path=/; Secure']
+            ),
+            self::MONTANA_VERIFICATION => Http::response('OK'),
+            self::MONTANA_SEARCH => Http::response($resultsHtml),
+        ]);
+    }
+
+    private function montanaResults(): string
+    {
+        return '<html><script>var data = [{"licenseNumber":"<a href=\'licensedetail?altid=MED-PHYS-LIC-100591\'>MED-PHYS-LIC-100591</a>","recordAlias":"Physician License","licenseStatus":"Active","firstName":"Natalia","lastName":"Solenkova","orgName":"","expDate":"03/31/2027","city":"AVENTURA","state":"FL","zip":"33180"}];</script></html>';
+    }
+
+    private function fakeNewHampshirePortal(): void
+    {
+        $searchPage = '<html><form method="post" action="/licenseverification/">
+            <input type="hidden" name="__EVENTTARGET" value="">
+            <input type="hidden" name="__EVENTARGUMENT" value="">
+            <input type="hidden" name="__LASTFOCUS" value="">
+            <input type="hidden" name="__VIEWSTATE" value="view-state">
+            <input type="hidden" name="__VIEWSTATEGENERATOR" value="view-state-generator">
+            <input type="hidden" name="__EVENTVALIDATION" value="event-validation">
+            <input name="t_web_lookup__profession_name">
+            <input name="t_web_lookup__license_type_name">
+            <input name="t_web_lookup__first_name">
+            <input name="t_web_lookup__last_name">
+            <input name="t_web_lookup__license_no">
+            <input name="sch_button">
+            </form></html>';
+        $results = '<html><table id="datagrid_results">
+            <tr><th>Full Name</th><th>Profession</th><th>License Type</th><th>License Number</th><th>License Status</th></tr>
+            <tr><td>CURTIS, JOHN A, Jr</td><td>Medicine</td><td>Physician</td><td>15080</td><td>Active</td></tr>
+            </table></html>';
+
+        Http::fake([
+            'https://forms.nh.gov/licenseverification/' => static function (Request $request) use ($searchPage) {
+                return $request->method() === 'GET'
+                    ? Http::response($searchPage)
+                    : Http::response('', 302, ['Location' => '/licenseverification/SearchResults.aspx']);
+            },
+            'https://forms.nh.gov/licenseverification/SearchResults.aspx' => Http::response($results),
+        ]);
     }
 }
