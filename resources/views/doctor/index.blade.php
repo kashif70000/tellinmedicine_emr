@@ -50,6 +50,7 @@
                             $licenseVerificationStatus = match ($doctor->license_state) {
                                 'MA' => $doctor->license_verification_status,
                                 'UK' => $doctor->uk_verification_status ?? ($doctor->is_verified ? 'verified' : 'pending'),
+                                'GH' => $doctor->license_verification_status,
                                 default => in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true)
                                     ? $doctor->license_verification_status
                                     : 'not_applicable',
@@ -90,7 +91,7 @@
                                         <a href="{{ route('doctor.profile', $doctor) }}" class="btn btn-outline-info" title="Open doctor profile">
                                             <i class="ti ti-user-cog"></i>
                                         </a>
-                                        @if($doctor->license_state === 'MA' || in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
+                                        @if($doctor->license_state === 'MA' || $doctor->license_state === 'GH' || in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
                                             <button type="button" class="btn btn-outline-primary verify-license-button" data-url="{{ route('admin.doctors.license.verify', $doctor) }}" title="Verify {{ $doctor->license_state }} license"><i class="ti ti-refresh"></i></button>
                                         @elseif($doctor->license_state === 'UK')
                                             <button type="button" class="btn btn-outline-success verify-license-button" data-url="{{ route('admin.doctors.uk.verify', $doctor) }}" title="Verify GMC registration"><i class="ti ti-shield-check"></i></button>

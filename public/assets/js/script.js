@@ -1594,6 +1594,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const licenseState = document.getElementById('doctor-license-state');
     const licenseStateGroup = document.getElementById('doctor-license-state-group');
 	const pmdcFields = document.getElementById('pmdc-license-fields');
+    const ghanaFields = document.getElementById('ghana-license-fields');
 	const verifyLicenseLabel = document.getElementById('doctor-verify-license-label');
 	const massachusettsFields = document.getElementById('massachusetts-license-fields');
 	const usLicenseFields = document.getElementById('us-license-fields');
@@ -1607,6 +1608,8 @@ document.addEventListener('DOMContentLoaded', function () {
 	let usLicenseReviewPending = false;
 	let pmdcLicenseVerified = false;
 	let indiaLicenseVerified = false;
+	let ghanaLicenseVerified = false;
+	let ghanaLicenseReviewPending = false;
 	let ukRegistrationVerified = false;
 	let ukRegistrationReviewPending = false;
 	const usLicenseStates = (licenseState?.dataset.usStates || '').split(',').filter(Boolean);
@@ -1625,6 +1628,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		if (licenseCountry.value === 'UK') return 'UK';
 		if (licenseCountry.value === 'PK') return 'PK';
 		if (licenseCountry.value === 'IN') return 'IN';
+		if (licenseCountry.value === 'GH') return 'GH';
 		return licenseCountry.value === 'US' ? licenseState?.value || '' : '';
 	}
 
@@ -1690,6 +1694,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		const selectedLicenseState = getLicenseState();
 		const isUk = selectedLicenseState === 'UK';
 		const isPakistan = selectedLicenseState === 'PK';
+		const isGhana = selectedLicenseState === 'GH';
 		const isMontana = selectedLicenseState === 'MT';
         const isUsLicenseCheck = usLicenseStates.includes(selectedLicenseState);
 		const isUsLicenseVerification = isUsLicenseCheck || isMontana;
@@ -1722,6 +1727,10 @@ document.addEventListener('DOMContentLoaded', function () {
 		}
 		if (selectedLicenseState === 'IN' && !indiaLicenseVerified) {
 			showLicenseResult('Verify your India NMC registration before submitting.', 'warning');
+			return false;
+		}
+		if (isGhana && !ghanaLicenseVerified && !ghanaLicenseReviewPending) {
+			showLicenseResult('Verify your Ghana MDC registration before submitting. If the registry cannot confirm the record, please retry later.', 'warning');
 			return false;
 		}
 
@@ -1778,6 +1787,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		const isUsLicenseVerification = isUsLicenseCheck || isMontana;
 		const isUk = selectedLicenseState === 'UK';
 		const isPakistan = selectedLicenseState === 'PK';
+		const isGhana = selectedLicenseState === 'GH';
 		const ukStateOption = licenseState?.querySelector('option[value="UK"]');
 		licenseCountryGroup?.classList.toggle('d-none', isDashboard);
 		licenseStateGroup?.classList.toggle('d-none', Boolean(licenseCountry) && !isDashboard && !isUnitedStates);
@@ -1792,28 +1802,31 @@ document.addEventListener('DOMContentLoaded', function () {
 		usLicenseFields?.classList.toggle('d-none', !isUsLicenseVerification);
 		ukRegistrationFields?.classList.toggle('d-none', !isUk);
 		pmdcFields?.classList.toggle('d-none', !isPakistan);
+		ghanaFields?.classList.toggle('d-none', !isGhana);
 		['doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date'].forEach(id => {
 			const field = document.getElementById(id);
 			if (field) field.required = isMassachusetts;
 		});
 		const licenseNumber = document.getElementById('doctor-license');
 		const licenseNumberLabel = document.getElementById('doctor-license-number-label');
-		verifyLicenseButton?.classList.toggle('d-none', !(isMassachusetts || isUsLicenseVerification || isPakistan || isIndia));
-		if (verifyLicenseLabel) verifyLicenseLabel.textContent = isPakistan ? 'Verify PMDC License' : (isIndia ? 'Verify India NMC License' : (isFlorida ? 'Verify Florida License' : (isMontana ? 'Verify Montana License' : 'Verify License')));
+		verifyLicenseButton?.classList.toggle('d-none', !(isMassachusetts || isUsLicenseVerification || isPakistan || isIndia || isGhana));
+		if (verifyLicenseLabel) verifyLicenseLabel.textContent = isGhana ? 'Verify Ghana MDC Registration' : (isPakistan ? 'Verify PMDC License' : (isIndia ? 'Verify India NMC License' : (isFlorida ? 'Verify Florida License' : (isMontana ? 'Verify Montana License' : 'Verify License'))));
 		verifyUkRegistrationButton?.classList.toggle('d-none', !isUk);
 		if (licenseNumber) {
 			licenseNumber.required = true;
-			licenseNumber.placeholder = isUk ? 'GMC Number' : (isPakistan ? 'PMDC Registration Number' : (isIndia ? 'India NMC Registration Number' : 'License Number'));
+			licenseNumber.placeholder = isGhana ? 'Ghana MDC Registration Number' : (isUk ? 'GMC Number' : (isPakistan ? 'PMDC Registration Number' : (isIndia ? 'India NMC Registration Number' : 'License Number')));
 		}
 		if (licenseNumberLabel) {
-			licenseNumberLabel.textContent = isUk ? 'GMC Number' : (isIndia ? 'India NMC Registration Number' : 'License Number');
+			licenseNumberLabel.textContent = isGhana ? 'Ghana MDC Registration Number' : (isUk ? 'GMC Number' : (isIndia ? 'India NMC Registration Number' : 'License Number'));
 		}
-		if (skipButton) skipButton.classList.toggle('d-none', isMassachusetts || isUsLicenseVerification || isUk || isPakistan || isIndia);
+		if (skipButton) skipButton.classList.toggle('d-none', isMassachusetts || isUsLicenseVerification || isUk || isPakistan || isIndia || isGhana);
 		massachusettsLicenseVerified = false;
 		usLicenseVerified = false;
 		usLicenseReviewPending = false;
 		pmdcLicenseVerified = false;
 		indiaLicenseVerified = false;
+		ghanaLicenseVerified = false;
+		ghanaLicenseReviewPending = false;
 		ukRegistrationVerified = false;
 		ukRegistrationReviewPending = false;
 		if (licenseResult) licenseResult.classList.add('d-none');
@@ -1857,6 +1870,8 @@ document.addEventListener('DOMContentLoaded', function () {
 			usLicenseReviewPending = false;
 			pmdcLicenseVerified = false;
 			indiaLicenseVerified = false;
+			ghanaLicenseVerified = false;
+			ghanaLicenseReviewPending = false;
 			ukRegistrationVerified = false;
 			ukRegistrationReviewPending = false;
 			if (licenseResult) licenseResult.classList.add('d-none');
@@ -1868,6 +1883,8 @@ document.addEventListener('DOMContentLoaded', function () {
 			usLicenseReviewPending = false;
 			pmdcLicenseVerified = false;
 			indiaLicenseVerified = false;
+			ghanaLicenseVerified = false;
+			ghanaLicenseReviewPending = false;
 			ukRegistrationVerified = false;
 			ukRegistrationReviewPending = false;
 			if (licenseResult) licenseResult.classList.add('d-none');
@@ -1883,7 +1900,8 @@ document.addEventListener('DOMContentLoaded', function () {
 		const isFlorida = selectedLicenseState === 'FL';
 		const isPakistan = selectedLicenseState === 'PK';
 		const isIndia = selectedLicenseState === 'IN';
-		const requiredFields = isPakistan || isMontana || isFlorida ? ['doctor-license'] : ['doctor-name', 'doctor-license'];
+		const isGhana = selectedLicenseState === 'GH';
+		const requiredFields = isPakistan || isMontana || isFlorida || isGhana ? ['doctor-license'] : ['doctor-name', 'doctor-license'];
 		if (isMassachusetts) {
 			requiredFields.push('doctor-license-type', 'doctor-license-issue-date', 'doctor-license-expiration-date');
 		}
@@ -1891,7 +1909,9 @@ document.addEventListener('DOMContentLoaded', function () {
 		if (!required) return;
 
 		verifyLicenseButton.disabled = true;
-		showLicenseResult(isPakistan
+		showLicenseResult(isGhana
+			? 'Checking the Ghana Medical Registry credential...'
+			: (isPakistan
 			? 'Checking the PMDC registration...'
 			: (isIndia ? 'Checking the India NMC registration...' : (isFlorida
 			? 'Checking the official Florida physician license portal...'
@@ -1899,11 +1919,15 @@ document.addEventListener('DOMContentLoaded', function () {
 			? 'Checking the official Montana physician license portal...'
 			: (isMassachusetts
 			? 'Checking the official Massachusetts license source...'
-			: 'Checking the selected state license using USLicenseCheck...')))), 'secondary');
+			: 'Checking the selected state license using USLicenseCheck...'))))), 'secondary');
 		try {
 			const verificationRequest = isPakistan
 				? { license_number: document.getElementById('doctor-license').value }
-				: (isIndia ? {
+				: (isGhana ? {
+					license_country: 'GH',
+					license_state: 'GH',
+					license_number: document.getElementById('doctor-license').value
+				} : (isIndia ? {
 					name: document.getElementById('doctor-name').value,
 					license_country: 'IN',
 					license_state: 'IN',
@@ -1912,7 +1936,7 @@ document.addEventListener('DOMContentLoaded', function () {
 					...(isMontana || isFlorida ? {} : { name: document.getElementById('doctor-name').value }),
 					license_state: selectedLicenseState,
 					license_number: document.getElementById('doctor-license').value
-				});
+				}));
 			if (isMassachusetts) {
 				verificationRequest.license_type = document.getElementById('doctor-license-type').value;
 				verificationRequest.license_issue_date = document.getElementById('doctor-license-issue-date').value;
@@ -1928,7 +1952,11 @@ document.addEventListener('DOMContentLoaded', function () {
 				body: JSON.stringify(verificationRequest)
 			});
 			const result = await response.json();
-			if (isPakistan) {
+			if (isGhana) {
+				ghanaLicenseVerified = result.success === true && result.status === 'verified';
+				ghanaLicenseReviewPending = result.status === 'manual_review';
+				showLicenseResult(result.message || 'The Ghana registry result requires administrative review.', ghanaLicenseVerified ? 'success' : (ghanaLicenseReviewPending ? 'info' : 'warning'));
+			} else if (isPakistan) {
 				pmdcLicenseVerified = result.success === true && result.status === 'verified';
 				showLicenseResult(result.message || (pmdcLicenseVerified ? 'PMDC registration verified.' : 'PMDC registration could not be verified.'), pmdcLicenseVerified ? 'success' : 'warning');
 			} else if (isIndia) {
@@ -1959,6 +1987,8 @@ document.addEventListener('DOMContentLoaded', function () {
 			usLicenseVerified = false;
 			usLicenseReviewPending = false;
 			indiaLicenseVerified = false;
+			ghanaLicenseVerified = false;
+			ghanaLicenseReviewPending = false;
 			showLicenseResult('Unable to Verify: the verification service could not be reached.', 'warning');
 		} finally {
 			verifyLicenseButton.disabled = false;

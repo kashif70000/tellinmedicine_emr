@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\LicenseVerificationAttempt;
+use App\Services\GhanaGmrLicenseVerificationService;
 use App\Services\IndiaNmcLicenseVerificationService;
 use App\Services\MassachusettsLicenseVerificationService;
 use App\Services\PmdcLicenseVerificationService;
@@ -33,7 +35,8 @@ class LicenseVerificationController extends Controller
         Request $request,
         MassachusettsLicenseVerificationService $massachusettsVerifier,
         USLicenseCheckVerificationService $usLicenseVerifier,
-        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier
+        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier,
+        GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier
     ) {
         abort_unless($request->user()?->role === 'admin', 403);
 
@@ -44,17 +47,35 @@ class LicenseVerificationController extends Controller
         $country = strtoupper((string) $request->input('country'));
         $isMassachusetts = $request->input('state') === 'MA';
         $isIndia = $country === 'IN';
+        $isGhana = $country === 'GH';
+        $stateOptions = $isIndia ? ['IN'] : ($isGhana ? ['GH'] : $supportedStates);
 
         $validated = $request->validate([
-            'country' => ['required', Rule::in(['US', 'IN'])],
-            'state' => [$isIndia ? 'nullable' : 'required', 'string', Rule::in($isIndia ? ['IN'] : $supportedStates)],
+            'country' => ['required', Rule::in(['US', 'IN', 'GH'])],
+            'state' => [$isIndia || $isGhana ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
             'license_number' => ['required', 'string', 'max:255'],
             'license_type' => [$isMassachusetts ? 'required' : 'nullable', Rule::in(['Full Physician', 'Limited Physician', 'Temporary Physician'])],
             'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
             'license_expiration_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'after:license_issue_date'],
         ]);
 
-        if ($isIndia) {
+        if ($isGhana) {
+            $verification = $ghanaGmrLicenseVerifier->verify($validated['license_number']);
+            $checkedAt = now();
+
+            LicenseVerificationAttempt::create([
+                'actor_user_id' => $request->user()->id,
+                'applicant_name' => $verification['official_data']['practitioner_name'] ?? 'Unknown',
+                'license_state' => 'GH',
+                'license_type' => 'Ghana MDC Registration',
+                'license_number' => $validated['license_number'],
+                'status' => $verification['status'],
+                'message' => $verification['message'],
+                'source' => $verification['source'],
+                'official_data' => $verification['official_data'],
+                'checked_at' => $checkedAt,
+            ]);
+        } elseif ($isIndia) {
             $verification = $indiaNmcLicenseVerifier->verify($validated['license_number']);
         } elseif ($isMassachusetts) {
             $verification = $massachusettsVerifier->verify([
@@ -77,6 +98,7 @@ class LicenseVerificationController extends Controller
             'message' => $verification['message'],
             'source' => $verification['source'] ?? null,
             'official_data' => $verification['official_data'] ?? null,
+            'checked_at' => $isGhana ? $checkedAt->toIso8601String() : null,
         ]);
     }
 

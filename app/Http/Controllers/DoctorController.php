@@ -7,6 +7,7 @@ use App\Models\LicenseVerificationAttempt;
 use App\Models\Patient;
 use App\Models\User;
 use App\Services\GmcUkVerificationService;
+use App\Services\GhanaGmrLicenseVerificationService;
 use App\Services\IndiaNmcLicenseVerificationService;
 use App\Services\MassachusettsLicenseVerificationService;
 use App\Services\PmdcLicenseVerificationService;
@@ -74,6 +75,7 @@ class DoctorController extends Controller
                         'license_verification_status' => match ($doctor->license_state) {
                             'MA' => $doctor->license_verification_status,
                             'UK' => $doctor->uk_verification_status ?? ($doctor->is_verified ? 'verified' : 'pending'),
+                            'GH' => $doctor->license_verification_status,
                             default => in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true)
                                 || in_array($doctor->license_state, ['MT', 'FL'], true)
                                 ? $doctor->license_verification_status
@@ -85,6 +87,7 @@ class DoctorController extends Controller
                             : null,
                         'license_verify_url' => $userRole === 'admin'
                             && ($doctor->license_state === 'MA'
+                                || $doctor->license_state === 'GH'
                                 || in_array($doctor->license_state, ['MT', 'FL'], true)
                                 || in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
                             ? route('admin.doctors.license.verify', $doctor->id)
@@ -118,7 +121,8 @@ class DoctorController extends Controller
         GmcUkVerificationService $ukVerifier,
         USLicenseCheckVerificationService $usLicenseVerifier,
         PmdcLicenseVerificationService $pmdcLicenseVerifier,
-        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier
+        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier,
+        GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier
     )
     {
         $isSkip = $request->boolean('skip');
@@ -130,9 +134,12 @@ class DoctorController extends Controller
                 ? ['PK']
                 : ($registrationCountry === 'IN'
                     ? ['IN']
-                    : array_merge(['MA', 'MT', 'FL'], config('uslicensecheck.supported_states', []))));
+                    : ($registrationCountry === 'GH'
+                        ? ['GH']
+                        : array_merge(['MA', 'MT', 'FL'], config('uslicensecheck.supported_states', [])))));
         $isPakistan = $registrationCountry === 'PK';
         $isIndia = $registrationCountry === 'IN';
+        $isGhana = $registrationCountry === 'GH';
         $isMassachusetts = strtoupper((string) $request->input('license_state')) === 'MA';
         $isMontana = strtoupper((string) $request->input('license_state')) === 'MT';
         $isUk = strtoupper((string) $request->input('license_state')) === 'UK';
@@ -149,13 +156,13 @@ class DoctorController extends Controller
             'fees' => ['required', 'numeric', 'min:0'],
             'clinic_name' => ['required', 'string', 'max:255'],
             'address' => ['nullable', 'string', 'max:255'],
-            'license_country' => [$isDoctorRegistration ? 'required' : 'nullable', Rule::in(['US', 'UK', 'PK', 'IN'])],
-            'license_state' => [$isDoctorRegistration ? 'required' : 'nullable', 'string', Rule::in($isDoctorRegistration ? $registrationStates : array_merge(['MA', 'MT', 'FL', 'UK', 'IN'], config('uslicensecheck.supported_states', [])))],
-            'license_number' => [$isUk || $isMassachusetts || $isUsLicenseVerification || $isPakistan || $isIndia || ! $isSkip ? 'required' : 'nullable', 'string', 'max:255'],
+            'license_country' => [$isDoctorRegistration ? 'required' : 'nullable', Rule::in(['US', 'UK', 'PK', 'IN', 'GH'])],
+            'license_state' => [$isDoctorRegistration ? 'required' : 'nullable', 'string', Rule::in($isDoctorRegistration ? $registrationStates : array_merge(['MA', 'MT', 'FL', 'UK', 'IN', 'GH'], config('uslicensecheck.supported_states', [])))],
+            'license_number' => [$isUk || $isMassachusetts || $isUsLicenseVerification || $isPakistan || $isIndia || $isGhana || ! $isSkip ? 'required' : 'nullable', 'string', 'max:255'],
             'license_type' => [$isMassachusetts ? 'required' : 'nullable', 'in:Full Physician,Limited Physician,Temporary Physician'],
             'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
             'license_expiration_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'after:license_issue_date'],
-            'certificate' => [$isSkip && ! $isMassachusetts ? 'nullable' : 'required', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
+            'certificate' => [$isSkip && ! $isMassachusetts && ! $isGhana ? 'nullable' : 'required', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
         ]);
         $validated['license_state'] = isset($validated['license_state']) ? strtoupper($validated['license_state']) : null;
 
@@ -190,6 +197,23 @@ class DoctorController extends Controller
                 ], 422);
             }
             $validated['license_type'] = $licenseResult['official_data']['registration_type'] ?? 'PMDC Registration';
+        } elseif ($isGhana) {
+            $licenseResult = $ghanaGmrLicenseVerifier->verify($validated['license_number']);
+            if (in_array($licenseResult['status'], ['failed', 'unable_to_verify'], true)) {
+                $this->recordLicenseAttempt([
+                    'name' => $validated['name'],
+                    'license_state' => 'GH',
+                    'license_type' => 'Ghana MDC Registration',
+                    'license_number' => $validated['license_number'],
+                ], $licenseResult);
+
+                return response()->json([
+                    'success' => false,
+                    'status' => $licenseResult['status'],
+                    'message' => $licenseResult['message'],
+                ], 422);
+            }
+            $validated['license_type'] = 'Ghana MDC Registration';
         } elseif ($isIndia) {
             $licenseResult = $indiaNmcLicenseVerifier->verify($validated['license_number']);
             if ($licenseResult['status'] !== 'verified') {
@@ -243,7 +267,7 @@ class DoctorController extends Controller
             ? $request->file('certificate')->store('certificates', 'public')
             : null;
 
-        $doctor = DB::transaction(function () use ($validated, $certificatePath, $isMassachusetts, $isUk, $isUsLicenseVerification, $isPakistan, $isIndia, $licenseResult, $ukResult) {
+        $doctor = DB::transaction(function () use ($validated, $certificatePath, $isMassachusetts, $isUk, $isUsLicenseVerification, $isPakistan, $isIndia, $isGhana, $licenseResult, $ukResult) {
             $user = User::create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
@@ -262,10 +286,12 @@ class DoctorController extends Controller
                 'address' => $validated['address'] ?? null,
                 'license_number' => $validated['license_number'] ?? null,
                 'certificate_path' => $certificatePath,
-                'verification_status' => ($isMassachusetts || ($ukResult['status'] ?? null) === 'verified' || (($isUsLicenseVerification || $isPakistan || $isIndia) && ($licenseResult['status'] ?? null) === 'verified'))
-                    ? 'approved'
-                    : ($isUk || $isUsLicenseVerification ? 'pending' : 'not_submitted'),
-                'is_verified' => $isMassachusetts || ($ukResult['status'] ?? null) === 'verified' || (($isUsLicenseVerification || $isPakistan || $isIndia) && ($licenseResult['status'] ?? null) === 'verified'),
+                'verification_status' => $isGhana
+                    ? 'pending'
+                    : (($isMassachusetts || ($ukResult['status'] ?? null) === 'verified' || (($isUsLicenseVerification || $isPakistan || $isIndia) && ($licenseResult['status'] ?? null) === 'verified'))
+                        ? 'approved'
+                        : ($isUk || $isUsLicenseVerification ? 'pending' : 'not_submitted')),
+                'is_verified' => ! $isGhana && ($isMassachusetts || ($ukResult['status'] ?? null) === 'verified' || (($isUsLicenseVerification || $isPakistan || $isIndia) && ($licenseResult['status'] ?? null) === 'verified')),
                 'rating_avg' => 0,
                 'license_state' => $validated['license_state'] ?? null,
                 'license_type' => $validated['license_type'] ?? null,
@@ -278,7 +304,7 @@ class DoctorController extends Controller
                 'license_verification_data' => $licenseResult['official_data'] ?? ($ukResult['official_data'] ?? null),
                 'license_verification_source' => $licenseResult['source'] ?? ($ukResult['source'] ?? null),
                 'license_verification_message' => $licenseResult['message'] ?? ($ukResult['message'] ?? null),
-                'license_verified_at' => $isMassachusetts || $isUsLicenseVerification || $isPakistan || $isIndia || ($ukResult['status'] ?? null) === 'verified' ? now() : null,
+                'license_verified_at' => $isMassachusetts || $isUsLicenseVerification || $isPakistan || $isIndia || $isGhana || ($ukResult['status'] ?? null) === 'verified' ? now() : null,
                 'uk_verification_status' => $ukResult['status'] ?? null,
                 'uk_gmc_number' => $ukResult['official_data']['gmc_number'] ?? null,
                 'uk_verified_name' => $ukResult['official_data']['full_name'] ?? null,
@@ -309,6 +335,13 @@ class DoctorController extends Controller
                     'license_type' => 'India NMC Registration',
                     'license_number' => $validated['license_number'],
                 ], $licenseResult, $doctor);
+            } elseif ($isGhana) {
+                $this->recordLicenseAttempt([
+                    'name' => $validated['name'],
+                    'license_state' => 'GH',
+                    'license_type' => 'Ghana MDC Registration',
+                    'license_number' => $validated['license_number'],
+                ], $licenseResult, $doctor);
             } elseif ($ukResult !== null) {
                 $this->recordLicenseAttempt($validated, $ukResult, $doctor);
             }
@@ -318,7 +351,9 @@ class DoctorController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => ($isUk && ($ukResult['status'] ?? null) !== 'verified')
+            'message' => $isGhana
+                ? 'Your application was submitted for administrative review. The Ghana Medical Registry record is not being treated as an officially confirmed practising licence.'
+                : (($isUk && ($ukResult['status'] ?? null) !== 'verified')
                 ? 'Your application was submitted for administrative review. GMC registration has not been automatically verified.'
                 : (($isUsLicenseVerification && ($licenseResult['status'] ?? null) !== 'verified')
                     ? ($isMontana
@@ -326,9 +361,10 @@ class DoctorController extends Controller
                         : ($isFlorida
                             ? 'Your application was submitted for administrative review. Florida could not automatically verify the physician license.'
                             : 'Your application was submitted for administrative review. USLicenseCheck could not automatically verify the physician license.'))
-                    : 'Doctor registered successfully.'),
+                    : 'Doctor registered successfully.')),
             'skip' => $isSkip,
-            'verification_pending' => ($isUk && ($ukResult['status'] ?? null) !== 'verified')
+            'verification_pending' => $isGhana
+                || ($isUk && ($ukResult['status'] ?? null) !== 'verified')
                 || ($isUsLicenseVerification && ($licenseResult['status'] ?? null) !== 'verified'),
             'doctor_id' => $doctor->id,
         ]);
@@ -338,17 +374,23 @@ class DoctorController extends Controller
         Request $request,
         MassachusettsLicenseVerificationService $licenseVerifier,
         USLicenseCheckVerificationService $usLicenseVerifier,
-        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier
+        IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier,
+        GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier
     )
     {
         $isMassachusetts = $request->input('license_state') === 'MA';
         $isMontana = strtoupper((string) $request->input('license_state')) === 'MT';
         $isFlorida = strtoupper((string) $request->input('license_state')) === 'FL';
         $isIndia = strtoupper((string) $request->input('license_country')) === 'IN';
+        $isGhana = strtoupper((string) $request->input('license_country')) === 'GH'
+            || strtoupper((string) $request->input('license_state')) === 'GH';
+        $stateOptions = $isGhana
+            ? ['GH']
+            : array_merge(['MA', 'MT', 'FL', 'IN'], config('uslicensecheck.supported_states', []));
         $validated = $request->validate([
-            'name' => [$isMontana || $isFlorida ? 'nullable' : 'required', 'string', 'max:255'],
-            'license_country' => ['nullable', Rule::in(['US', 'UK', 'PK', 'IN'])],
-            'license_state' => ['required', 'string', Rule::in(array_merge(['MA', 'MT', 'FL', 'IN'], config('uslicensecheck.supported_states', [])))],
+            'name' => [$isMontana || $isFlorida || $isGhana ? 'nullable' : 'required', 'string', 'max:255'],
+            'license_country' => ['nullable', Rule::in($isGhana ? ['GH'] : ['US', 'UK', 'PK', 'IN'])],
+            'license_state' => ['required', 'string', Rule::in($stateOptions)],
             'license_type' => [$isMassachusetts ? 'required' : 'nullable', 'in:Full Physician,Limited Physician,Temporary Physician'],
             'license_number' => ['required', 'string', 'max:255'],
             'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
@@ -370,6 +412,24 @@ class DoctorController extends Controller
                 'message' => $result['message'],
                 'official_data' => $result['official_data'],
             ], in_array($result['status'], ['failed', 'not_found', 'removed', 'manual_review', 'unable_to_verify'], true) ? 422 : 200);
+        }
+
+        if ($isGhana) {
+            $result = $ghanaGmrLicenseVerifier->verify($validated['license_number']);
+            $this->recordLicenseAttempt([
+                'name' => $validated['name'] ?? 'Unknown',
+                'license_state' => 'GH',
+                'license_type' => 'Ghana MDC Registration',
+                'license_number' => $validated['license_number'],
+            ], $result);
+
+            return response()->json([
+                'success' => $result['status'] === 'verified',
+                'status' => $result['status'],
+                'message' => $result['message'],
+                'source' => $result['source'],
+                'official_data' => $result['official_data'],
+            ], in_array($result['status'], ['failed', 'unable_to_verify'], true) ? 422 : 200);
         }
 
         if ($isMassachusetts) {
@@ -440,36 +500,42 @@ class DoctorController extends Controller
         Request $request,
         Doctor $doctor,
         MassachusettsLicenseVerificationService $licenseVerifier,
-        USLicenseCheckVerificationService $usLicenseVerifier
+        USLicenseCheckVerificationService $usLicenseVerifier,
+        GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier
     )
     {
         abort_unless($request->user()?->role === 'admin', 403);
         $isMassachusetts = $doctor->license_state === 'MA';
+        $isGhana = $doctor->license_state === 'GH';
         $isMontana = $doctor->license_state === 'MT';
         $isFlorida = $doctor->license_state === 'FL';
         $isUsLicenseCheck = in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true);
-        abort_unless($isMassachusetts || $isMontana || $isFlorida || $isUsLicenseCheck, 404);
+        abort_unless($isMassachusetts || $isGhana || $isMontana || $isFlorida || $isUsLicenseCheck, 404);
 
         $application = [
             'name' => $doctor->user->name,
             'license_state' => $doctor->license_state,
-            'license_type' => $doctor->license_type,
+            'license_type' => $isGhana ? 'Ghana MDC Registration' : $doctor->license_type,
             'license_number' => $doctor->license_number,
             'license_issue_date' => $doctor->license_issue_date?->toDateString(),
             'license_expiration_date' => $doctor->license_expiration_date?->toDateString(),
         ];
-        $result = $isMassachusetts
-            ? $licenseVerifier->verify($application)
-            : $usLicenseVerifier->verify($application);
+        $result = $isGhana
+            ? $ghanaGmrLicenseVerifier->verify((string) $application['license_number'])
+            : ($isMassachusetts
+                ? $licenseVerifier->verify($application)
+                : $usLicenseVerifier->verify($application));
         $isDefinitiveFailure = in_array($result['status'], ['failed', 'expired'], true)
             || ($isMassachusetts && $result['status'] === 'manual_review');
 
-        DB::transaction(function () use ($doctor, $application, $result, $request, $isDefinitiveFailure, $isMassachusetts) {
+        DB::transaction(function () use ($doctor, $application, $result, $request, $isDefinitiveFailure, $isMassachusetts, $isGhana) {
             $doctor->update([
-                'is_verified' => $result['status'] === 'verified' ? true : ($isDefinitiveFailure ? false : $doctor->is_verified),
-                'verification_status' => $result['status'] === 'verified' && ! $isMassachusetts
+                'is_verified' => $isGhana ? false : ($result['status'] === 'verified' ? true : ($isDefinitiveFailure ? false : $doctor->is_verified)),
+                'verification_status' => $isGhana
+                    ? ($isDefinitiveFailure ? 'rejected' : 'pending')
+                    : ($result['status'] === 'verified' && ! $isMassachusetts
                     ? 'approved'
-                    : ($isDefinitiveFailure ? 'rejected' : $doctor->verification_status),
+                    : ($isDefinitiveFailure ? 'rejected' : $doctor->verification_status)),
                 'license_verification_status' => $result['status'],
                 'official_license_status' => $result['official_data']['status'] ?? ($isMassachusetts ? $doctor->official_license_status : null),
                 'official_license_issue_date' => $result['official_data']['issue_date'] ?? ($isMassachusetts ? $doctor->official_license_issue_date : null),
@@ -479,7 +545,7 @@ class DoctorController extends Controller
                 'license_verification_message' => $result['message'],
                 'license_verified_at' => now(),
             ]);
-            if ($result['status'] === 'verified' && ! $isMassachusetts) {
+            if ($result['status'] === 'verified' && ! $isMassachusetts && ! $isGhana) {
                 $doctor->user()->update(['is_active' => true]);
             } elseif ($isDefinitiveFailure) {
                 $doctor->user()->update(['is_active' => false]);
@@ -493,6 +559,7 @@ class DoctorController extends Controller
             'message' => $result['message'],
             'official_data' => $result['official_data'],
             'checked_at' => $doctor->fresh()->license_verified_at?->toIso8601String(),
+            'source' => $result['source'],
         ], $result['status'] === 'verified' ? 200 : 422);
     }
 
@@ -625,6 +692,7 @@ public function updateVerification(Request $request)
         ], 404);
     }
 
+    $requiresFreshLicenseCheck = in_array($doctor->license_state, ['MA', 'GH'], true);
     $certificatePath = $doctor->certificate_path;
 
     if ($request->hasFile('certificate')) {
@@ -638,15 +706,16 @@ public function updateVerification(Request $request)
         'verification_status' => 'pending',
         'is_verified' => false,
         'ai_result' => null,
-        'license_verification_status' => $doctor->license_state === 'MA' ? 'pending' : $doctor->license_verification_status,
-        'official_license_status' => $doctor->license_state === 'MA' ? null : $doctor->official_license_status,
-        'official_license_issue_date' => $doctor->license_state === 'MA' ? null : $doctor->official_license_issue_date,
-        'official_license_expiration_date' => $doctor->license_state === 'MA' ? null : $doctor->official_license_expiration_date,
-        'license_verification_data' => $doctor->license_state === 'MA' ? null : $doctor->license_verification_data,
-        'license_verification_message' => $doctor->license_state === 'MA' ? 'License details changed and require a fresh verification.' : $doctor->license_verification_message,
-        'license_verified_at' => $doctor->license_state === 'MA' ? null : $doctor->license_verified_at,
+        'license_verification_status' => $requiresFreshLicenseCheck ? 'pending' : $doctor->license_verification_status,
+        'official_license_status' => $requiresFreshLicenseCheck ? null : $doctor->official_license_status,
+        'official_license_issue_date' => $requiresFreshLicenseCheck ? null : $doctor->official_license_issue_date,
+        'official_license_expiration_date' => $requiresFreshLicenseCheck ? null : $doctor->official_license_expiration_date,
+        'license_verification_data' => $requiresFreshLicenseCheck ? null : $doctor->license_verification_data,
+        'license_verification_source' => $requiresFreshLicenseCheck ? null : $doctor->license_verification_source,
+        'license_verification_message' => $requiresFreshLicenseCheck ? 'License details changed and require a fresh verification.' : $doctor->license_verification_message,
+        'license_verified_at' => $requiresFreshLicenseCheck ? null : $doctor->license_verified_at,
     ]);
-    if ($doctor->license_state === 'MA') {
+    if ($requiresFreshLicenseCheck) {
         $doctor->user()->update(['is_active' => false]);
     }
 
