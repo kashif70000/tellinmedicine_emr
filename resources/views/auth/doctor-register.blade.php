@@ -348,6 +348,8 @@
                                             <option value="PK">Pakistan</option>
                                             <option value="IN">India</option>
                                             <option value="GH">Ghana</option>
+                                            <option value="UG">Uganda</option>
+                                            <option value="TZ">Tanzania</option>
                                         </select>
                                         <div class="invalid-feedback">Select your country</div>
                                     </div>
@@ -363,6 +365,9 @@
                                             @endforeach
                                             <option value="UK" data-country="UK">United Kingdom (UK)</option>
                                             <option value="GH" data-country="GH">Ghana (GH)</option>
+                                            <option value="UG" data-country="UG">Uganda (UG)</option>
+                                            <option value="TZ" data-country="TZ">Tanzania (TZ)</option>
+                                            <option value="TZ" data-country="TZ">Tanzania (TZ)</option>
                                         </select>
                                         <div class="invalid-feedback">Select your license state</div>
                                     </div>
@@ -395,6 +400,9 @@
                                     </div>
                                     <div id="ghana-license-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">Ghana Medical Registry results that cannot be independently confirmed against the regulator will be submitted for manual review and will not be automatically approved.</p>
+                                    </div>
+                                    <div id="tanzania-license-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">The MCT lookup uses the registration number as the primary search identifier. Records that are expired or not approved will not be treated as active physician credentials.</p>
                                     </div>
                                     <div id="uk-registration-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">GMC registration is checked using your full name and GMC number. Both are required for verification.</p>

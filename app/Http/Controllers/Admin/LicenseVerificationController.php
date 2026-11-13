@@ -8,6 +8,8 @@ use App\Services\GhanaGmrLicenseVerificationService;
 use App\Services\IndiaNmcLicenseVerificationService;
 use App\Services\MassachusettsLicenseVerificationService;
 use App\Services\PmdcLicenseVerificationService;
+use App\Services\TanzaniaLicenseVerificationService;
+use App\Services\UgandaLicenseVerificationService;
 use App\Services\USLicenseCheckVerificationService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -36,7 +38,9 @@ class LicenseVerificationController extends Controller
         MassachusettsLicenseVerificationService $massachusettsVerifier,
         USLicenseCheckVerificationService $usLicenseVerifier,
         IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier,
-        GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier
+        GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier,
+        UgandaLicenseVerificationService $ugandaLicenseVerifier,
+        TanzaniaLicenseVerificationService $tanzaniaLicenseVerifier
     ) {
         abort_unless($request->user()?->role === 'admin', 403);
 
@@ -48,11 +52,13 @@ class LicenseVerificationController extends Controller
         $isMassachusetts = $request->input('state') === 'MA';
         $isIndia = $country === 'IN';
         $isGhana = $country === 'GH';
-        $stateOptions = $isIndia ? ['IN'] : ($isGhana ? ['GH'] : $supportedStates);
+        $isUganda = $country === 'UG';
+        $isTanzania = $country === 'TZ';
+        $stateOptions = $isIndia ? ['IN'] : ($isGhana ? ['GH'] : ($isUganda ? ['UG'] : ($isTanzania ? ['TZ'] : $supportedStates)));
 
         $validated = $request->validate([
-            'country' => ['required', Rule::in(['US', 'IN', 'GH'])],
-            'state' => [$isIndia || $isGhana ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
+            'country' => ['required', Rule::in(['US', 'IN', 'GH', 'UG', 'TZ'])],
+            'state' => [$isIndia || $isGhana || $isUganda || $isTanzania ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
             'license_number' => ['required', 'string', 'max:255'],
             'license_type' => [$isMassachusetts ? 'required' : 'nullable', Rule::in(['Full Physician', 'Limited Physician', 'Temporary Physician'])],
             'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
@@ -68,6 +74,38 @@ class LicenseVerificationController extends Controller
                 'applicant_name' => $verification['official_data']['practitioner_name'] ?? 'Unknown',
                 'license_state' => 'GH',
                 'license_type' => 'Ghana MDC Registration',
+                'license_number' => $validated['license_number'],
+                'status' => $verification['status'],
+                'message' => $verification['message'],
+                'source' => $verification['source'],
+                'official_data' => $verification['official_data'],
+                'checked_at' => $checkedAt,
+            ]);
+        } elseif ($isUganda) {
+            $verification = $ugandaLicenseVerifier->verify($validated['license_number']);
+            $checkedAt = now();
+
+            LicenseVerificationAttempt::create([
+                'actor_user_id' => $request->user()->id,
+                'applicant_name' => $verification['official_data']['practitioner_name'] ?? 'Unknown',
+                'license_state' => 'UG',
+                'license_type' => 'Uganda UMDPC Registration',
+                'license_number' => $validated['license_number'],
+                'status' => $verification['status'],
+                'message' => $verification['message'],
+                'source' => $verification['source'],
+                'official_data' => $verification['official_data'],
+                'checked_at' => $checkedAt,
+            ]);
+        } elseif ($isTanzania) {
+            $verification = $tanzaniaLicenseVerifier->verify($validated['license_number']);
+            $checkedAt = now();
+
+            LicenseVerificationAttempt::create([
+                'actor_user_id' => $request->user()->id,
+                'applicant_name' => $verification['official_data']['practitioner_name'] ?? 'Unknown',
+                'license_state' => 'TZ',
+                'license_type' => 'Tanzania MCT Registration',
                 'license_number' => $validated['license_number'],
                 'status' => $verification['status'],
                 'message' => $verification['message'],

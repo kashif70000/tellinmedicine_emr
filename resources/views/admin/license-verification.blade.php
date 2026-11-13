@@ -27,6 +27,8 @@
                             <option value="PK">Pakistan</option>
                             <option value="IN">India</option>
                             <option value="GH">Ghana</option>
+                            <option value="UG">Uganda</option>
+                            <option value="TZ">Tanzania</option>
                         </select>
                         <div class="invalid-feedback" data-error-for="country"></div>
                     </div>
@@ -116,6 +118,8 @@
         const isUnitedStates = country.value === 'US';
         const isIndia = country.value === 'IN';
         const isGhana = country.value === 'GH';
+        const isUganda = country.value === 'UG';
+        const isTanzania = country.value === 'TZ';
         const isMassachusetts = isUnitedStates && state.value === 'MA';
 
         stateGroup.classList.toggle('d-none', !isUnitedStates);
@@ -133,7 +137,7 @@
             }
         });
 
-        if (isIndia || isGhana) {
+        if (isIndia || isGhana || isUganda || isTanzania) {
             state.required = false;
         }
 
@@ -176,6 +180,8 @@
             'source',
             'sourceresponse',
             'rawresponse',
+            'profilepicture',
+            'profileurl',
             'error',
             'multiple',
             'rawstatus',
