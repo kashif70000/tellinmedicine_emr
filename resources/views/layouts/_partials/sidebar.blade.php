@@ -179,6 +179,11 @@
                                         <i class="ti ti-shield-check"></i><span>License Verification</span>
                                     </a>
                                 </li>
+                                <li class="{{ $nav('admin.doctor-license-lookup.*') }}">
+                                    <a href="{{ route('admin.doctor-license-lookup.index') }}">
+                                        <i class="ti ti-stethoscope"></i><span>DoctorLicenseLookup</span>
+                                    </a>
+                                </li>
                                 <li class="{{ $nav('admin.directory-scraper.*') }}">
                                     <a href="{{ route('admin.directory-scraper.index') }}">
                                         <i class="ti ti-database"></i><span>Labs & Pharmacies</span>

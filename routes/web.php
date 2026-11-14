@@ -27,6 +27,7 @@ use App\Http\Controllers\MedicineController;
 use App\Http\Controllers\PatientPreferenceController;
 use App\Http\Controllers\Admin\DirectoryScraperController;
 use App\Http\Controllers\Admin\NpiVerificationController;
+use App\Http\Controllers\Admin\DoctorLicenseLookupController;
 use App\Http\Controllers\Admin\LicenseVerificationController;
 
 
@@ -344,5 +345,11 @@ Route::middleware(['auth'])->prefix('admin')->group(function () {
 
     Route::post('/npi-verification/verify', [NpiVerificationController::class, 'verify'])
         ->name('admin.npi.verify');
+
+    Route::get('/doctor-license-lookup', [DoctorLicenseLookupController::class, 'index'])
+        ->name('admin.doctor-license-lookup.index');
+    Route::post('/doctor-license-lookup/verify', [DoctorLicenseLookupController::class, 'verify'])
+        ->middleware('throttle:10,1')
+        ->name('admin.doctor-license-lookup.verify');
 
 });
