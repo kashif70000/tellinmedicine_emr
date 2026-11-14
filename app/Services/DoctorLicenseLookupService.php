@@ -86,7 +86,7 @@ class DoctorLicenseLookupService
 
         $csrfToken = $this->extractCsrfToken($statePageResponse) ?: (string) config('doctor_lookup.fallback_token', '');
         if ($csrfToken === '') {
-            return $this->result('manual_review', 'DoctorLicenseLookup did not return a valid CSRF token. Manual review is required.');
+            return $this->result('unable_to_verify', 'DoctorLicenseLookup did not return a valid CSRF token. Manual review is required.');
         }
 
         $postHeaders = $this->buildHeaders($statePageUrl, $csrfToken);
@@ -112,12 +112,22 @@ class DoctorLicenseLookupService
 
         $body = $searchResponse->json();
         if (! is_array($body)) {
-            return $this->result('manual_review', 'DoctorLicenseLookup returned an unexpected response format. Manual review is required.', ['raw_response' => $searchResponse->body()]);
+            return $this->result('unable_to_verify', 'DoctorLicenseLookup returned an unexpected response format. Manual review is required.', ['raw_response' => $searchResponse->body()]);
         }
 
         $status = strtolower((string) ($body['status'] ?? $body['verification_status'] ?? ''));
         $success = filter_var($body['success'] ?? false, FILTER_VALIDATE_BOOLEAN);
         $officialData = $this->extractOfficialData($body);
+        $httpStatus = $searchResponse->status();
+
+        if ($searchResponse->failed()
+            && (in_array($httpStatus, [401, 403, 408, 425, 429], true) || $httpStatus >= 500)) {
+            return $this->result(
+                'unable_to_verify',
+                'DoctorLicenseLookup is temporarily unavailable. Manual review is required.',
+                $officialData + ['status_code' => $httpStatus]
+            );
+        }
 
         if ($this->hasEmptyResultsCollection($body)
             || $this->hasExplicitNoResults($body)
@@ -130,16 +140,31 @@ class DoctorLicenseLookupService
         }
 
         if ($searchResponse->failed() && $searchResponse->status() >= 400) {
-            return $this->result('failed', 'DoctorLicenseLookup did not accept the search request.', $officialData + ['status_code' => $searchResponse->status()]);
+            return $this->result(
+                'unable_to_verify',
+                'DoctorLicenseLookup did not accept the search request. Manual review is required.',
+                $officialData + ['status_code' => $searchResponse->status()]
+            );
         }
 
         if ($success || in_array($status, ['verified', 'success', 'active'], true)) {
-            $payloadLicense = $this->extractLicenseNumber($officialData, $body, $licenseNumber);
-            if ($payloadLicense !== null && $this->normalizeLicenseNumber($payloadLicense) !== $this->normalizeLicenseNumber($licenseNumber)) {
+            $payloadLicense = $this->extractLicenseNumber($officialData, $body);
+            if ($payloadLicense === null) {
+                if (! $this->hasSingleActiveRecord($officialData, $body)) {
+                    return $this->result('manual_review', 'DoctorLicenseLookup did not return a usable license number or a single active record. Manual review is required.', $officialData);
+                }
+            } elseif (preg_match('/[*•…●#]/u', $payloadLicense) === 1) {
+                if (! $this->hasActiveLicenseStatus($officialData)) {
+                    return $this->result('manual_review', 'DoctorLicenseLookup returned a masked license number without an active license status. Manual review is required.', $officialData);
+                }
+            } elseif ($this->normalizeLicenseNumber($payloadLicense) !== $this->normalizeLicenseNumber($licenseNumber)) {
                 return $this->result('failed', 'The returned physician license does not match the submitted license number.', $officialData);
             }
 
-            return $this->result('verified', 'The physician license was found on DoctorLicenseLookup.', $officialData);
+            $officialData = $this->withoutReturnedLicenseNumbers($officialData);
+            $officialData['verified_license_number'] = $licenseNumber;
+
+            return $this->result('verified', 'The physician license was found and is active on DoctorLicenseLookup.', $officialData);
         }
 
         if (isset($body['message']) && is_string($body['message']) && trim($body['message']) !== '') {
@@ -224,34 +249,75 @@ class DoctorLicenseLookupService
         return $token === '' ? null : $token;
     }
 
-    private function extractLicenseNumber(array $officialData, array $payload, string $defaultLicenseNumber): ?string
+    private function extractLicenseNumber(array $officialData, array $payload): ?string
     {
-        foreach (['license_number', 'licenseNo', 'license_no', 'licenseNumber', 'doctor_license_number', 'number'] as $key) {
-            if (isset($officialData[$key]) && is_scalar($officialData[$key])) {
-                return (string) $officialData[$key];
-            }
+        $keys = ['licenseno', 'licensenumber', 'doctorlicensenumber', 'licno', 'number'];
+
+        return $this->findScalarByNormalizedKey($officialData, $keys)
+            ?? $this->findScalarByNormalizedKey($payload, $keys);
+    }
+
+    private function hasSingleActiveRecord(array $officialData, array $payload): bool
+    {
+        if ($officialData === [] || ! $this->hasActiveLicenseStatus($officialData)) {
+            return false;
+        }
+
+        if (isset($payload['multiple']) && is_array($payload['multiple']) && $payload['multiple'] !== []) {
+            return false;
         }
 
         foreach (['data', 'record', 'records', 'result', 'results', 'items', 'licenses', 'license'] as $key) {
-            if (! isset($payload[$key])) {
+            $collection = $payload[$key] ?? null;
+            if (! is_array($collection) || ! array_is_list($collection)) {
                 continue;
             }
 
-            $candidate = $payload[$key];
-            if (is_array($candidate)) {
-                foreach ($candidate as $entry) {
-                    if (is_array($entry)) {
-                        foreach (['license_number', 'licenseNo', 'license_no', 'licenseNumber', 'doctor_license_number', 'number'] as $nestedKey) {
-                            if (isset($entry[$nestedKey]) && is_scalar($entry[$nestedKey])) {
-                                return (string) $entry[$nestedKey];
-                            }
-                        }
-                    }
+            return count($collection) === 1;
+        }
+
+        return true;
+    }
+
+    private function hasActiveLicenseStatus(array $data): bool
+    {
+        foreach ($data as $key => $value) {
+            $normalizedKey = $this->normalizeFieldKey((string) $key);
+            $isStatusField = $normalizedKey === 'status'
+                || str_starts_with($normalizedKey, 'status')
+                || str_starts_with($normalizedKey, 'licstatus')
+                || str_starts_with($normalizedKey, 'licencestatus')
+                || str_starts_with($normalizedKey, 'licensestatus');
+
+            if ($isStatusField && is_scalar($value) && preg_match('/(?<![a-z])active(?![a-z])/i', trim((string) $value)) === 1) {
+                return true;
+            }
+
+            if (is_array($value) && $this->hasActiveLicenseStatus($value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function findScalarByNormalizedKey(array $data, array $keys): ?string
+    {
+        foreach ($data as $key => $value) {
+            $normalizedKey = $this->normalizeFieldKey((string) $key);
+            if (in_array($normalizedKey, $keys, true) && is_scalar($value)) {
+                return (string) $value;
+            }
+
+            if (is_array($value)) {
+                $candidate = $this->findScalarByNormalizedKey($value, $keys);
+                if ($candidate !== null) {
+                    return $candidate;
                 }
             }
         }
 
-        return $defaultLicenseNumber;
+        return null;
     }
 
     private function extractOfficialData(array $payload): array
@@ -261,13 +327,77 @@ class DoctorLicenseLookupService
                 $value = $payload[$key];
                 if (is_array($value)) {
                     if ($value !== []) {
-                        return $value;
+                        if (array_is_list($value) && count($value) === 1 && is_array($value[0])) {
+                            return $this->unwrapSingleRecord($value[0]);
+                        }
+
+                        return $this->unwrapSingleRecord($value);
                     }
                 }
             }
         }
 
         return $payload;
+    }
+
+    private function unwrapSingleRecord(array $data): array
+    {
+        if (array_is_list($data) && count($data) === 1 && is_array($data[0])) {
+            return $this->unwrapSingleRecord($data[0]);
+        }
+
+        foreach (['data', 'record', 'records', 'result', 'results', 'items', 'licenses', 'license'] as $key) {
+            $nested = $data[$key] ?? null;
+            if (! is_array($nested) || $nested === []) {
+                continue;
+            }
+
+            if (array_is_list($nested) && count($nested) === 1 && is_array($nested[0])) {
+                return $this->unwrapSingleRecord($nested[0]);
+            }
+        }
+
+        $normalized = [];
+        foreach ($data as $key => $value) {
+            $normalizedKey = preg_replace('/^\s*\d+\s*\/\s*/', '', (string) $key) ?? (string) $key;
+            $normalized[$normalizedKey] = is_array($value)
+                ? $this->unwrapSingleRecord($value)
+                : $value;
+        }
+
+        return $normalized;
+    }
+
+    private function withoutReturnedLicenseNumbers(array $data): array
+    {
+        $licenseNumberKeys = [
+            'licenseno',
+            'licensenumber',
+            'doctorlicensenumber',
+            'licno',
+            'number',
+        ];
+
+        foreach ($data as $key => $value) {
+            $normalizedKey = $this->normalizeFieldKey((string) $key);
+            if (in_array($normalizedKey, $licenseNumberKeys, true)) {
+                unset($data[$key]);
+                continue;
+            }
+
+            if (is_array($value)) {
+                $data[$key] = $this->withoutReturnedLicenseNumbers($value);
+            }
+        }
+
+        return $data;
+    }
+
+    private function normalizeFieldKey(string $key): string
+    {
+        $normalized = strtolower(preg_replace('/[^a-z0-9]/i', '', $key) ?? '');
+
+        return preg_replace('/^\d+/', '', $normalized) ?? $normalized;
     }
 
     private function hasEmptyResultsCollection(array $payload): bool

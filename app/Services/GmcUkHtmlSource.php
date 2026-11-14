@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use DOMDocument;
-use DOMNode;
 use DOMXPath;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -12,14 +11,14 @@ use config\services;
 
 class GmcUkHtmlSource implements GmcUkRegistrationSource
 {
-    public function find(string $fullName, ?string $gmcNumber = null): ?array
+    public function find(string $gmcNumber): ?array
     {
-        $name = trim($fullName);
-        if ($name === '') {
+        $number = $this->normalizeNumeric($gmcNumber);
+        if ($number === '') {
             return [];
         }
 
-        $url = $this->searchUrl($name);
+        $url = $this->profileUrl($number);
 
         try {
               $response = Http::withHeaders([
@@ -112,9 +111,10 @@ class GmcUkHtmlSource implements GmcUkRegistrationSource
         }
 
         $xpath = new DOMXPath($doc);
-        $nodes = $xpath->query('//a[@href]');
-        if (! $nodes || $nodes->count() === 0) {
-            Log::warning('GMC register HTML contained no links for result extraction.', [
+        $profileNumber = $this->elementText($xpath, '//*[@id="gmcNumberId"]');
+        $fullName = $this->elementText($xpath, '//*[@id="registrantNameId"]');
+        if ($profileNumber === '' || $fullName === '') {
+            Log::warning('GMC register profile page did not contain registrant details.', [
                 'status' => $response->status(),
                 'content_type' => $response->header('Content-Type'),
                 'cf_ray' => $response->header('CF-RAY'),
@@ -124,61 +124,35 @@ class GmcUkHtmlSource implements GmcUkRegistrationSource
             return null;
         }
 
-        $candidates = [];
-        foreach ($nodes as $node) {
-            $href = trim((string) $node->getAttribute('href'));
-            if (! $this->isTrustedProfileUrl($href)) {
-                continue;
-            }
-
-            $containerText = $this->containerText($node);
-            if ($containerText === '') {
-                continue;
-            }
-
-            $record = [
-                'full_name' => $this->extractName($containerText, $node),
-                'profile_url' => $this->normalizeProfileUrl($href),
-                'gmc_number' => $this->extractGmcNumberFromProfileUrl($href),
-                'registration_status' => $this->extractRegistrationStatus($containerText),
-                'licence_status' => $this->extractLicenceStatus($containerText),
-                'source_url' => $this->searchUrl($name),
-                'raw_text' => $containerText,
-            ];
-
-            if ($record['full_name'] === '' && $record['gmc_number'] === '' && $record['profile_url'] === '') {
-                continue;
-            }
-
-            $candidates[] = $record;
-        }
-
-        if ($candidates === []) {
-            Log::warning('GMC register HTML contained no extractable official profile records.', [
-                'status' => $response->status(),
-                'content_type' => $response->header('Content-Type'),
+        $normalizedProfileNumber = $this->normalizeNumeric($profileNumber);
+        if ($normalizedProfileNumber !== $number) {
+            Log::info('GMC register profile number did not match the requested number.', [
                 'cf_ray' => $response->header('CF-RAY'),
-                'link_count' => $nodes->count(),
-                'body_length' => strlen($html),
             ]);
+
+            return [];
         }
 
-        $nameCandidates = $this->filterByName($candidates, $name);
+        $statusText = $this->elementText($xpath, '//*[@data-simpletooltip-content-id="registration-status"]');
+        $record = [
+            'full_name' => $fullName,
+            'profile_url' => $url,
+            'gmc_number' => $normalizedProfileNumber,
+            'registration_status' => $this->extractRegistrationStatus($statusText),
+            'licence_status' => $this->extractLicenceStatus($statusText),
+            'source_url' => $url,
+        ];
+
         Log::info('GMC register HTML response was parsed.', [
             'status' => $response->status(),
             'content_type' => $response->header('Content-Type'),
             'cf_ray' => $response->header('CF-RAY'),
-            'link_count' => $nodes->count(),
-            'profile_candidate_count' => count($candidates),
-            'name_match_count' => count($nameCandidates),
+            'profile_candidate_count' => 1,
+            'number_match_count' => 1,
             'body_length' => strlen($html),
         ]);
 
-        if ($candidates === []) {
-            return null;
-        }
-
-        return $nameCandidates;
+        return [$record];
     }
 
     public function sourceName(): string
@@ -186,111 +160,19 @@ class GmcUkHtmlSource implements GmcUkRegistrationSource
         return 'GMC Register Search';
     }
 
-    private function searchUrl(string $fullName): string
+    private function profileUrl(string $gmcNumber): string
     {
-        return 'https://www.gmc-uk.org/registrants?text=' . urlencode(trim($fullName)) . '&allProfessions=true';
+        return 'https://www.gmc-uk.org/registrants/' . urlencode($gmcNumber);
     }
 
-    private function isTrustedProfileUrl(string $href): bool
+    private function elementText(DOMXPath $xpath, string $query): string
     {
-        $href = trim($href);
-        if ($href === '') {
-            return false;
-        }
-
-        $normalized = strtolower($href);
-        if (str_starts_with($normalized, 'javascript:') || str_starts_with($normalized, '#')) {
-            return false;
-        }
-
-        $url = $this->normalizeProfileUrl($href);
-        if ($url === '') {
-            return false;
-        }
-
-        return preg_match('/^https?:\/\/(?:www\.)?gmc-uk\.org\/registrants\/\d{7}\/?(?:[?#].*)?$/i', $url) === 1;
-    }
-
-    private function normalizeProfileUrl(string $href): string
-    {
-        $href = trim($href);
-        if ($href === '') {
-            return '';
-        }
-
-        if (preg_match('/^https?:\/\//i', $href)) {
-            return $href;
-        }
-
-        if (preg_match('/^\/\//', $href)) {
-            return 'https:' . $href;
-        }
-
-        if (str_starts_with($href, '/')) {
-            return 'https://www.gmc-uk.org' . $href;
-        }
-
-        return '';
-    }
-
-    private function containerText(DOMNode $node): string
-    {
-        $parts = [];
-        $current = $node;
-        $limit = 0;
-
-        while ($current && $limit < 8) {
-            $text = trim((string) $current->textContent);
-            if ($text !== '') {
-                $parts[] = preg_replace('/\s+/', ' ', $text) ?? $text;
-            }
-            $current = $current->parentNode;
-            $limit++;
-        }
-
-        return trim(implode(' ', $parts));
-    }
-
-    private function extractName(string $text, DOMNode $node): string
-    {
-        $nodeText = trim((string) $node->textContent);
-        if ($nodeText !== '') {
-            $text = $nodeText;
-        }
-
-        $text = preg_replace('/\s+/', ' ', $text) ?? $text;
-        $text = preg_replace('/\b(?:GMC|Registration|No\.?|Number)\b.*$/i', '', $text);
-        $text = trim($text, " \t\n\r|,-");
-
-        if ($text === '') {
-            return '';
-        }
-
-        if (preg_match('/([A-Z][A-Za-z\'\.-]+(?:\s+[A-Z][A-Za-z\'\.-]+)+)/', $text, $matches)) {
-            return trim($matches[1]);
-        }
-
-        return $text;
-    }
-
-    private function extractGmcNumber(string $text): string
-    {
-        if (preg_match('/(?:GMC|registration(?:\s+No\.?|\s+no\.?|\s+number)?|gmc\s*no\.?|gmc\s*number)[^\d]{0,20}(\d{5,})/i', $text, $matches)) {
-            return trim($matches[1]);
-        }
-
-        if (preg_match('/\b(\d{5,})\b/', $text, $matches)) {
-            return trim($matches[1]);
-        }
-
-        return '';
-    }
-
-    private function extractGmcNumberFromProfileUrl(string $href): string
-    {
-        return preg_match('~/registrants/(\d{7})/?(?:[?#].*)?$~i', $href, $matches)
-            ? $matches[1]
+        $nodes = $xpath->query($query);
+        $text = $nodes && $nodes->length > 0
+            ? trim((string) $nodes->item(0)?->textContent)
             : '';
+
+        return preg_replace('/\s+/', ' ', $text) ?? $text;
     }
 
     private function extractRegistrationStatus(string $text): ?string
@@ -327,43 +209,6 @@ class GmcUkHtmlSource implements GmcUkRegistrationSource
         }
 
         return null;
-    }
-
-    private function filterByName(array $candidates, string $name): array
-    {
-        if ($candidates === []) {
-            return [];
-        }
-
-        return array_values(array_filter($candidates, function ($candidate) use ($name) {
-            return $this->namesMatch($name, (string) ($candidate['full_name'] ?? ''));
-        }));
-    }
-
-    private function namesMatch(string $submittedName, string $officialName): bool
-    {
-        $submittedParts = $this->nameParts($submittedName);
-        $officialParts = $this->nameParts($officialName);
-
-        return $submittedParts !== [] && array_diff($submittedParts, $officialParts) === [];
-    }
-
-    private function nameParts(string $value): array
-    {
-        $value = strtolower($value);
-        $value = preg_replace('/[^a-z0-9]+/', ' ', $value) ?? $value;
-        $parts = preg_split('/\s+/', trim($value), -1, PREG_SPLIT_NO_EMPTY);
-
-        return array_values(array_unique($parts ?: []));
-    }
-
-    private function normalizeName(string $value): string
-    {
-        $value = strtolower(trim($value));
-        $value = preg_replace('/\s+/', ' ', $value) ?? $value;
-        $value = preg_replace('/[^a-z0-9]/', '', $value);
-
-        return $value;
     }
 
     private function normalizeNumeric(string $value): string

@@ -355,13 +355,10 @@
                                     </div>
                                     <div id="doctor-license-state-group" class="col-md-6">
                                         <label class="form-label" for="doctor-license-state">State</label>
-                                        <select id="doctor-license-state" name="license_state" class="form-select" data-us-states="{{ implode(',', array_merge(config('uslicensecheck.supported_states', []), ['FL'])) }}" required>
+                                        <select id="doctor-license-state" name="license_state" class="form-select" data-us-states="{{ implode(',', array_keys(config('doctor_lookup.states', []))) }}" required>
                                             <option value="">Select your license state</option>
-                                            <option value="MA">Massachusetts (MA)</option>
-                                            <option value="MT">Montana (MT)</option>
-                                            <option value="FL">Florida (FL)</option>
-                                            @foreach(config('uslicensecheck.supported_states', []) as $stateCode)
-                                                <option value="{{ $stateCode }}">{{ config('uslicensecheck.states.' . $stateCode) }} ({{ $stateCode }})</option>
+                                            @foreach(config('doctor_lookup.states', []) as $stateCode => $stateData)
+                                                <option value="{{ $stateCode }}">{{ $stateData['name'] }} ({{ $stateCode }})</option>
                                             @endforeach
                                             <option value="UK" data-country="UK">United Kingdom (UK)</option>
                                             <option value="GH" data-country="GH">Ghana (GH)</option>
@@ -371,29 +368,8 @@
                                         </select>
                                         <div class="invalid-feedback">Select your license state</div>
                                     </div>
-                                    <div id="massachusetts-license-fields" class="col-12 d-none">
-                                        <div class="row g-3">
-                                            <div class="col-md-6">
-                                                <label class="form-label" for="doctor-license-type">License Type</label>
-                                                <select id="doctor-license-type" name="license_type" class="form-select">
-                                                    <option value="">Select physician license type</option>
-                                                    <option value="Full Physician">Full Physician</option>
-                                                    <option value="Limited Physician">Limited Physician</option>
-                                                    <option value="Temporary Physician">Temporary Physician</option>
-                                                </select>
-                                            </div>
-                                            <div class="col-md-6">
-                                                <label class="form-label" for="doctor-license-issue-date">Latest License Issue Date</label>
-                                                <input id="doctor-license-issue-date" name="license_issue_date" type="date" class="form-control">
-                                            </div>
-                                            <div class="col-md-6">
-                                                <label class="form-label" for="doctor-license-expiration-date">License Expiration Date</label>
-                                                <input id="doctor-license-expiration-date" name="license_expiration_date" type="date" class="form-control">
-                                            </div>
-                                        </div>
-                                    </div>
                                     <div id="us-license-fields" class="col-12 d-none">
-                                        <p class="text-muted mb-2">License details are checked against the selected state's license source. Incomplete or ambiguous records will be referred for administrative review.</p>
+                                        <p class="text-muted mb-2">U.S. license numbers are checked against DoctorLicenseLookup. Inconclusive records may be submitted for administrative review.</p>
                                     </div>
                                     <div id="pmdc-license-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">Enter your PMDC registration number to verify your active registration.</p>
@@ -405,7 +381,7 @@
                                         <p class="text-muted mb-2">The MCT lookup uses the registration number as the primary search identifier. Records that are expired or not approved will not be treated as active physician credentials.</p>
                                     </div>
                                     <div id="uk-registration-fields" class="col-12 d-none">
-                                        <p class="text-muted mb-2">GMC registration is checked using your full name and GMC number. Both are required for verification.</p>
+                                        <p class="text-muted mb-2">GMC registration is checked using your GMC number.</p>
                                         <div id="doctor-uk-registration-result" class="alert alert-secondary mt-3 mb-0 d-none" role="status" aria-live="polite"></div>
                                     </div>
                                     <div class="col-12">

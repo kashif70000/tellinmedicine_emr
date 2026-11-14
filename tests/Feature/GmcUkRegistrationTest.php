@@ -17,7 +17,7 @@ class GmcUkRegistrationTest extends TestCase
         $this->app->instance(GmcUkRegistrationSource::class, new class($records) implements GmcUkRegistrationSource {
             public function __construct(private ?array $records) {}
 
-            public function find(string $fullName, ?string $gmcNumber = null): ?array
+            public function find(string $gmcNumber): ?array
             {
                 return $this->records;
             }
