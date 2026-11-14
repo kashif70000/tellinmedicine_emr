@@ -347,18 +347,27 @@
                                             <option value="UK">United Kingdom</option>
                                             <option value="PK">Pakistan</option>
                                             <option value="IN">India</option>
+                                            <option value="GH">Ghana</option>
+                                            <option value="UG">Uganda</option>
+                                            <option value="TZ">Tanzania</option>
                                         </select>
                                         <div class="invalid-feedback">Select your country</div>
                                     </div>
                                     <div id="doctor-license-state-group" class="col-md-6">
                                         <label class="form-label" for="doctor-license-state">State</label>
-                                        <select id="doctor-license-state" name="license_state" class="form-select" data-us-states="{{ implode(',', config('uslicensecheck.supported_states', [])) }}" required>
+                                        <select id="doctor-license-state" name="license_state" class="form-select" data-us-states="{{ implode(',', array_merge(config('uslicensecheck.supported_states', []), ['FL'])) }}" required>
                                             <option value="">Select your license state</option>
                                             <option value="MA">Massachusetts (MA)</option>
+                                            <option value="MT">Montana (MT)</option>
+                                            <option value="FL">Florida (FL)</option>
                                             @foreach(config('uslicensecheck.supported_states', []) as $stateCode)
                                                 <option value="{{ $stateCode }}">{{ config('uslicensecheck.states.' . $stateCode) }} ({{ $stateCode }})</option>
                                             @endforeach
                                             <option value="UK" data-country="UK">United Kingdom (UK)</option>
+                                            <option value="GH" data-country="GH">Ghana (GH)</option>
+                                            <option value="UG" data-country="UG">Uganda (UG)</option>
+                                            <option value="TZ" data-country="TZ">Tanzania (TZ)</option>
+                                            <option value="TZ" data-country="TZ">Tanzania (TZ)</option>
                                         </select>
                                         <div class="invalid-feedback">Select your license state</div>
                                     </div>
@@ -384,10 +393,16 @@
                                         </div>
                                     </div>
                                     <div id="us-license-fields" class="col-12 d-none">
-                                        <p class="text-muted mb-2">License details are checked against USLicenseCheck data. Incomplete or ambiguous records will be referred for administrative review.</p>
+                                        <p class="text-muted mb-2">License details are checked against the selected state's license source. Incomplete or ambiguous records will be referred for administrative review.</p>
                                     </div>
                                     <div id="pmdc-license-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">Enter your PMDC registration number to verify your active registration.</p>
+                                    </div>
+                                    <div id="ghana-license-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">Ghana Medical Registry results that cannot be independently confirmed against the regulator will be submitted for manual review and will not be automatically approved.</p>
+                                    </div>
+                                    <div id="tanzania-license-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">The MCT lookup uses the registration number as the primary search identifier. Records that are expired or not approved will not be treated as active physician credentials.</p>
                                     </div>
                                     <div id="uk-registration-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">GMC registration is checked using your full name and GMC number. Both are required for verification.</p>

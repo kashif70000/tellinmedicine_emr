@@ -26,6 +26,9 @@
                             <option value="US">United States</option>
                             <option value="PK">Pakistan</option>
                             <option value="IN">India</option>
+                            <option value="GH">Ghana</option>
+                            <option value="UG">Uganda</option>
+                            <option value="TZ">Tanzania</option>
                         </select>
                         <div class="invalid-feedback" data-error-for="country"></div>
                     </div>
@@ -114,6 +117,9 @@
     function updateFields() {
         const isUnitedStates = country.value === 'US';
         const isIndia = country.value === 'IN';
+        const isGhana = country.value === 'GH';
+        const isUganda = country.value === 'UG';
+        const isTanzania = country.value === 'TZ';
         const isMassachusetts = isUnitedStates && state.value === 'MA';
 
         stateGroup.classList.toggle('d-none', !isUnitedStates);
@@ -131,9 +137,8 @@
             }
         });
 
-        if (isIndia) {
-            document.getElementById('license-state').required = false;
-            document.getElementById('license-type').required = false;
+        if (isIndia || isGhana || isUganda || isTanzania) {
+            state.required = false;
         }
 
         clearErrors();
@@ -175,11 +180,16 @@
             'source',
             'sourceresponse',
             'rawresponse',
+            'profilepicture',
+            'profileurl',
             'error',
             'multiple',
             'rawstatus',
             'lastscraped',
-            'apirecord'
+            'apirecord',
+            'checkedat',
+            'registryverifiedat',
+            'sourceurl'
         ].includes(normalized) || normalized.endsWith('metaid');
     }
 
@@ -270,7 +280,10 @@
 
         const details = document.createElement('div');
         details.className = 'row g-3';
-        appendDataRows(details, data.official_data);
+        appendDataRows(details, {
+            ...(data.official_data || {}),
+            ...(data.checked_at ? { checked_at: data.checked_at } : {})
+        });
         if (details.childElementCount) {
             body.append(details);
         } else {

@@ -216,9 +216,9 @@
         <h5 id="license-verification-heading" class="fw-bold mb-0">License Verification</h5>
         @if(auth()->user()->role === 'admin')
             <div class="d-flex gap-2">
-                @if($doctor->license_state === 'MA' || in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
+                @if($doctor->license_state === 'MA' || $doctor->license_state === 'GH' || in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
                     <button type="button" id="profile-verify-license" class="btn btn-outline-primary" data-url="{{ route('admin.doctors.license.verify', $doctor) }}">
-                        <i class="ti ti-refresh me-1"></i>Verify License
+                        <i class="ti ti-refresh me-1"></i>{{ $doctor->license_state === 'GH' ? 'Verify Ghana Registration' : 'Verify License' }}
                     </button>
                 @endif
                 @if($doctor->license_state === 'UK')
@@ -243,6 +243,17 @@
             <div class="col-md-6"><span class="text-muted d-block">Official latest issue / expiration</span><strong>{{ $officialLicense['issue_date'] ?? $doctor->official_license_issue_date?->format('Y-m-d') ?? 'Not returned' }} / {{ $officialLicense['expiration_date'] ?? $doctor->official_license_expiration_date?->format('Y-m-d') ?? 'Not returned' }}</strong></div>
             <div class="col-md-6"><span class="text-muted d-block">Verification status</span><span id="profile-license-status" class="badge bg-{{ $doctor->license_verification_status === 'verified' ? 'success' : (in_array($doctor->license_verification_status, ['failed', 'expired']) ? 'danger' : 'warning') }} text-capitalize">{{ str_replace('_', ' ', $doctor->license_verification_status ?? 'pending') }}</span></div>
             <div class="col-md-6"><span class="text-muted d-block">Last verified</span><strong id="profile-license-checked-at">{{ $doctor->license_verified_at?->format('M j, Y g:i A') ?? 'Never' }}</strong></div>
+            <div class="col-12"><div id="profile-license-result" class="alert alert-secondary mb-0" role="status" aria-live="polite">{{ $doctor->license_verification_message ?? 'No verification attempt recorded.' }}</div></div>
+            @elseif($doctor->license_state === 'GH')
+            <div class="col-md-6"><span class="text-muted d-block">Returned practitioner</span><strong>{{ $officialLicense['practitioner_name'] ?? 'Not returned' }}</strong></div>
+            <div class="col-md-6"><span class="text-muted d-block">Council / designation</span><strong>{{ $officialLicense['council'] ?? 'Not returned' }} / {{ $officialLicense['designation'] ?? 'Not returned' }}</strong></div>
+            <div class="col-md-6"><span class="text-muted d-block">Returned registration number</span><strong>{{ $officialLicense['current_registration_number'] ?? $officialLicense['registration_number'] ?? 'Not returned' }}</strong></div>
+            <div class="col-md-6"><span class="text-muted d-block">Returned status / expiry</span><strong>{{ $officialLicense['status'] ?? 'Not returned' }} / {{ $officialLicense['expiry_date'] ?? 'Not returned' }}</strong></div>
+            <div class="col-md-6"><span class="text-muted d-block">Verification status</span><span id="profile-license-status" class="badge bg-{{ $doctor->license_verification_status === 'verified' ? 'success' : (in_array($doctor->license_verification_status, ['failed', 'expired']) ? 'danger' : 'warning') }} text-capitalize">{{ str_replace('_', ' ', $doctor->license_verification_status ?? 'pending') }}</span></div>
+            <div class="col-md-6"><span class="text-muted d-block">Verification source / checked</span><strong>{{ $doctor->license_verification_source ?? 'Not recorded' }} / {{ $doctor->license_verified_at?->format('M j, Y g:i A') ?? 'Never' }}</strong></div>
+            @if($officialLicense['source_url'] ?? null)
+            <div class="col-md-6"><span class="text-muted d-block">Registry record</span><a href="{{ $officialLicense['source_url'] }}" target="_blank" rel="noopener">Open Ghana Medical Registry credential</a></div>
+            @endif
             <div class="col-12"><div id="profile-license-result" class="alert alert-secondary mb-0" role="status" aria-live="polite">{{ $doctor->license_verification_message ?? 'No verification attempt recorded.' }}</div></div>
             @elseif(in_array($doctor->license_state, config('uslicensecheck.supported_states', []), true))
             <div class="col-md-6"><span class="text-muted d-block">Returned license holder</span><strong>{{ $officialLicense['full_name'] ?? 'Not returned' }}</strong></div>
