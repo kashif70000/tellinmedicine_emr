@@ -20,6 +20,8 @@ class UgandaLicenseVerificationService
 
     private const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
+    private const ISSUER_CA_CERTIFICATE = 'certificates/uganda-sectigo-r36-intermediate.pem';
+
     public function verify(string $registrationNumber): array
     {
         $registrationNumber = trim($registrationNumber);
@@ -36,12 +38,20 @@ class UgandaLicenseVerificationService
             return $this->result('unavailable', 'Uganda license verification is not configured.');
         }
 
+        $caBundle = $this->caBundleConfiguration();
+        $this->logInvalidConfiguredCaBundle($caBundle);
         $cookieJar = new CookieJar();
         $initialStartedAt = microtime(true);
+        $initialAttempt = [];
 
         try {
             $initialResponse = $this->requestWithRetry(
-                fn () => $this->pendingRequest($cookieJar)->get($initialUrl)
+                function (?string $portalIp, int $attempt) use ($cookieJar, $initialUrl, &$initialAttempt) {
+                    $initialAttempt = ['connection_attempt' => $attempt, 'portal_ip' => $portalIp];
+
+                    return $this->pendingRequest($cookieJar, null, $portalIp)->get($initialUrl);
+                },
+                'initial_search_page'
             );
         } catch (ConnectionException|InvalidArgumentException $exception) {
             return $this->connectionFailure(
@@ -49,7 +59,8 @@ class UgandaLicenseVerificationService
                 'initial_search_page',
                 $initialUrl,
                 $registrationNumber,
-                (int) round((microtime(true) - $initialStartedAt) * 1000)
+                (int) round((microtime(true) - $initialStartedAt) * 1000),
+                $initialAttempt
             );
         }
 
@@ -106,15 +117,18 @@ class UgandaLicenseVerificationService
         }
 
         $submissionStartedAt = microtime(true);
+        $submissionAttempt = [];
         try {
-            $request = $this->pendingRequest($cookieJar, $initialUrl);
-            $searchResponse = $this->requestWithRetry(function () use ($request, $searchForm) {
+            $searchResponse = $this->requestWithRetry(function (?string $portalIp, int $attempt) use ($cookieJar, $initialUrl, $searchForm, &$submissionAttempt) {
+                $submissionAttempt = ['connection_attempt' => $attempt, 'portal_ip' => $portalIp];
+                $request = $this->pendingRequest($cookieJar, $initialUrl, $portalIp);
+
                 if ($searchForm['method'] === 'GET') {
                     return $request->get($searchForm['action'], $searchForm['parameters']);
                 }
 
                 return $request->asForm()->post($searchForm['action'], $searchForm['parameters']);
-            });
+            }, 'search_form_submission');
         } catch (ConnectionException|InvalidArgumentException $exception) {
             return $this->connectionFailure(
                 $exception,
@@ -127,7 +141,7 @@ class UgandaLicenseVerificationService
                     'session_cookies_received' => count($cookieJar) > 0,
                     'umdpc_selected' => true,
                     'form_method' => $searchForm['method'],
-                ]
+                ] + $submissionAttempt
             );
         }
 
@@ -242,14 +256,164 @@ class UgandaLicenseVerificationService
         return $this->result('verified', 'The Uganda physician registration and active license were verified against the official UMDPC portal.', $this->officialData($record));
     }
 
-    private function caBundlePath(): ?string
+    private function caBundleConfiguration(): array
     {
-        $path = trim((string) config('uganda_license.ca_bundle_path', 'D:\\laragon\\etc\\ssl\\cacert.pem'));
+        $configuredPath = trim((string) config('uganda_license.ca_bundle_path', ''));
+        $candidates = [];
+        if ($configuredPath !== '') {
+            $candidates[] = ['path' => $configuredPath, 'source' => 'uganda_config'];
+        }
 
-        return $path !== '' && is_file($path) ? $path : null;
+        foreach ([
+            'php_curl_ini' => (string) ini_get('curl.cainfo'),
+            'php_openssl_ini' => (string) ini_get('openssl.cafile'),
+        ] as $source => $path) {
+            $path = trim($path);
+            if ($path !== '' && ! in_array($path, array_column($candidates, 'path'), true)) {
+                $candidates[] = ['path' => $path, 'source' => $source];
+            }
+        }
+
+        $configuredExists = $configuredPath !== '' && is_file($configuredPath);
+        $configuredReadable = $configuredExists && is_readable($configuredPath);
+        $configuredValid = $configuredReadable && $this->isValidCaBundle($configuredPath);
+        $resolvedPath = null;
+        $source = 'php_default';
+        foreach ($candidates as $candidate) {
+            if (! is_file($candidate['path']) || ! is_readable($candidate['path']) || ! $this->isValidCaBundle($candidate['path'])) {
+                continue;
+            }
+
+            $resolvedPath = realpath($candidate['path']) ?: $candidate['path'];
+            $source = $candidate['source'];
+            break;
+        }
+
+        $issuerPath = (string) config('uganda_license.issuer_ca_path', resource_path(self::ISSUER_CA_CERTIFICATE));
+        $issuerExists = is_file($issuerPath);
+        $issuerReadable = $issuerExists && is_readable($issuerPath);
+        $effectivePath = $resolvedPath;
+        $issuerAdded = false;
+        if ($resolvedPath !== null && $issuerReadable) {
+            $combinedPath = $this->combinedCaBundlePath($resolvedPath, $issuerPath);
+            if ($combinedPath !== null) {
+                $effectivePath = $combinedPath;
+                $issuerAdded = true;
+            }
+        }
+
+        return [
+            'configured_path' => $configuredPath !== '' ? $configuredPath : null,
+            'configured_exists' => $configuredExists,
+            'configured_readable' => $configuredReadable,
+            'configured_valid' => $configuredValid,
+            'resolved_path' => $resolvedPath,
+            'effective_path' => $effectivePath,
+            'source' => $source,
+            'issuer_path' => $issuerPath,
+            'issuer_exists' => $issuerExists,
+            'issuer_readable' => $issuerReadable,
+            'issuer_added' => $issuerAdded,
+        ];
     }
 
-    private function pendingRequest(CookieJar $cookieJar, ?string $referer = null)
+    private function isValidCaBundle(string $path): bool
+    {
+        $contents = file_get_contents($path);
+        if ($contents === false
+            || preg_match('/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/', $contents, $matches) !== 1) {
+            return false;
+        }
+
+        return @openssl_x509_read($matches[0]) !== false;
+    }
+
+    private function combinedCaBundlePath(string $caBundlePath, string $issuerPath): ?string
+    {
+        $caBundleHash = hash_file('sha256', $caBundlePath);
+        $issuerHash = hash_file('sha256', $issuerPath);
+        if ($caBundleHash === false || $issuerHash === false) {
+            $this->logCaBundlePreparationFailure('Unable to fingerprint a CA certificate file.', $caBundlePath, $issuerPath);
+
+            return null;
+        }
+
+        $combinedPath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'uganda-ca-'.substr(hash('sha256', $caBundleHash.$issuerHash), 0, 24).'.pem';
+        if (is_file($combinedPath) && is_readable($combinedPath)) {
+            return $combinedPath;
+        }
+
+        $caContents = file_get_contents($caBundlePath);
+        $issuerContents = file_get_contents($issuerPath);
+        if ($caContents === false || $issuerContents === false) {
+            $this->logCaBundlePreparationFailure('Unable to read a CA certificate file.', $caBundlePath, $issuerPath);
+
+            return null;
+        }
+
+        $temporaryPath = tempnam(sys_get_temp_dir(), 'uganda-ca-');
+        if ($temporaryPath === false) {
+            $this->logCaBundlePreparationFailure('Unable to create a temporary CA bundle file.', $caBundlePath, $issuerPath);
+
+            return null;
+        }
+
+        $contents = rtrim($caContents).PHP_EOL.trim($issuerContents).PHP_EOL;
+        if (file_put_contents($temporaryPath, $contents, LOCK_EX) === false) {
+            unlink($temporaryPath);
+            $this->logCaBundlePreparationFailure('Unable to write the temporary CA bundle file.', $caBundlePath, $issuerPath);
+
+            return null;
+        }
+
+        if (! rename($temporaryPath, $combinedPath)) {
+            unlink($temporaryPath);
+
+            if (is_file($combinedPath) && is_readable($combinedPath)) {
+                return $combinedPath;
+            }
+
+            $this->logCaBundlePreparationFailure('Unable to finalize the temporary CA bundle file.', $caBundlePath, $issuerPath);
+
+            return null;
+        }
+
+        return $combinedPath;
+    }
+
+    private function logCaBundlePreparationFailure(string $reason, string $caBundlePath, string $issuerPath): void
+    {
+        Log::warning('Uganda UMDPC CA bundle could not be prepared; SSL verification remains enabled', [
+            'country' => 'UG',
+            'verification_source' => self::SOURCE,
+            'request_stage' => 'ca_bundle_preparation',
+            'reason' => $reason,
+            'ca_bundle_path' => $caBundlePath,
+            'issuer_ca_path' => $issuerPath,
+            'ssl_verification_enabled' => true,
+        ]);
+    }
+
+    private function logInvalidConfiguredCaBundle(array $caBundle): void
+    {
+        if ($caBundle['configured_path'] === null || $caBundle['configured_valid']) {
+            return;
+        }
+
+        Log::warning('Uganda UMDPC configured CA bundle is missing, unreadable, or invalid; SSL verification remains enabled', [
+            'country' => 'UG',
+            'verification_source' => self::SOURCE,
+            'configured_ca_bundle_path' => $caBundle['configured_path'],
+            'configured_ca_bundle_exists' => $caBundle['configured_exists'],
+            'configured_ca_bundle_readable' => $caBundle['configured_readable'],
+            'configured_ca_bundle_valid' => $caBundle['configured_valid'],
+            'resolved_ca_bundle_path' => $caBundle['resolved_path'],
+            'ca_bundle_source' => $caBundle['source'],
+            'ssl_verification_enabled' => true,
+        ]);
+    }
+
+    protected function pendingRequest(CookieJar $cookieJar, ?string $referer = null, ?string $portalIp = null)
     {
         $headers = [
             'User-Agent' => self::USER_AGENT,
@@ -260,34 +424,86 @@ class UgandaLicenseVerificationService
             $headers['Referer'] = $referer;
         }
 
+        $caBundle = $this->caBundleConfiguration();
         $options = [
             'allow_redirects' => ['max' => 5, 'track_redirects' => true],
             'cookies' => $cookieJar,
             'version' => 2.0,
-            'verify' => $this->caBundlePath() ?? true,
+            'verify' => $caBundle['effective_path'] ?? true,
         ];
+        if ($portalIp !== null) {
+            $options['curl'] = [
+                CURLOPT_RESOLVE => ['ehealthlicense.go.ug:443:'.$portalIp],
+            ];
+        }
 
         return Http::withHeaders($headers)
             ->withOptions($options)
-            ->connectTimeout(max(1, (int) config('uganda_license.connect_timeout', 10)))
+            ->connectTimeout(max(1, (int) config('uganda_license.connect_timeout', 5)))
             ->timeout(max(1, (int) config('uganda_license.timeout', 20)));
     }
 
-    private function requestWithRetry(callable $request): Response
+    private function requestWithRetry(callable $request, string $stage): Response
     {
-        for ($attempt = 1; $attempt <= 2; $attempt++) {
+        $portalIps = array_slice($this->portalIpAddresses(), 0, 2);
+        $maxAttempts = 2;
+        $delay = max(0, (int) config('uganda_license.retry_delay_ms', 250));
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $portalIp = $portalIps === []
+                ? null
+                : $portalIps[min($attempt - 1, count($portalIps) - 1)];
+            $attemptStartedAt = microtime(true);
             try {
-                return $request();
+                $response = $request($portalIp, $attempt);
+                if ($attempt > 1 && (bool) config('uganda_license.diagnostics', false)) {
+                    Log::info('Uganda UMDPC request succeeded after retrying a portal address', [
+                        'country' => 'UG',
+                        'verification_source' => self::SOURCE,
+                        'request_stage' => $stage,
+                        'connection_attempt' => $attempt,
+                        'portal_ip' => $portalIp,
+                        'response_time_ms' => (int) round((microtime(true) - $attemptStartedAt) * 1000),
+                    ]);
+                }
+
+                return $response;
             } catch (ConnectionException $exception) {
-                if ($attempt === 2) {
+                if ($attempt === $maxAttempts) {
                     throw $exception;
                 }
 
-                usleep(250_000);
+                if ((bool) config('uganda_license.diagnostics', false)) {
+                    Log::notice('Uganda UMDPC connection attempt failed; trying the next portal address', [
+                        'country' => 'UG',
+                        'verification_source' => self::SOURCE,
+                        'request_stage' => $stage,
+                        'connection_attempt' => $attempt,
+                        'portal_ip' => $portalIp,
+                        'response_time_ms' => (int) round((microtime(true) - $attemptStartedAt) * 1000),
+                        'error' => $exception::class,
+                    ]);
+                }
+
+                if ($delay > 0) {
+                    usleep($delay * 1000 * (2 ** ($attempt - 1)));
+                }
             }
         }
 
         throw new \LogicException('The Uganda portal request retry loop ended unexpectedly.');
+    }
+
+    protected function portalIpAddresses(): array
+    {
+        $addresses = @gethostbynamel('ehealthlicense.go.ug');
+        if (! is_array($addresses)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(
+            $addresses,
+            static fn ($address): bool => filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+        )));
     }
 
     private function findPractitionerSearchForm(string $html): ?\DOMElement
@@ -460,7 +676,10 @@ class UgandaLicenseVerificationService
             'error' => $exception::class,
             'curl_error_number' => $curlNumber,
             'curl_error_message' => $curlMessage ?? $exception::class,
-        ], $extra);
+            'connect_timeout_seconds' => max(1, (int) config('uganda_license.connect_timeout', 5)),
+            'request_timeout_seconds' => max(1, (int) config('uganda_license.timeout', 20)),
+            'ssl_verification_enabled' => true,
+        ], $this->caBundleDiagnostics(), $extra);
         if ((bool) config('uganda_license.diagnostics', false)) {
             $context['request_url'] = $this->sanitizeDiagnosticUrl($url);
             $context['request_value_redacted'] = $registrationNumber !== '';
@@ -473,6 +692,27 @@ class UgandaLicenseVerificationService
                 ? 'The Uganda search page could not be reached to initialize verification.'
                 : 'The Uganda practitioner search connection failed; the registration could not be verified.'
         );
+    }
+
+    private function caBundleDiagnostics(): array
+    {
+        $caBundle = $this->caBundleConfiguration();
+
+        return [
+            'configured_ca_bundle_path' => $caBundle['configured_path'],
+            'configured_ca_bundle_exists' => $caBundle['configured_exists'],
+            'configured_ca_bundle_readable' => $caBundle['configured_readable'],
+            'configured_ca_bundle_valid' => $caBundle['configured_valid'],
+            'resolved_ca_bundle_path' => $caBundle['resolved_path'],
+            'effective_ca_bundle_path' => $caBundle['effective_path'],
+            'ca_bundle_readable' => $caBundle['effective_path'] !== null,
+            'ca_bundle_source' => $caBundle['source'],
+            'issuer_ca_path' => $caBundle['issuer_path'],
+            'issuer_ca_exists' => $caBundle['issuer_exists'],
+            'issuer_ca_readable' => $caBundle['issuer_readable'],
+            'issuer_ca_added' => $caBundle['issuer_added'],
+            'ssl_verification_enabled' => true,
+        ];
     }
 
     private function logResponseFailure(

@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Services\UgandaLicenseVerificationService;
 use Carbon\Carbon;
+use GuzzleHttp\Cookie\CookieJar;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -20,8 +21,9 @@ class UgandaLicenseVerificationServiceTest extends TestCase
 
         config([
             'uganda_license.license_verification_url' => self::INITIAL_URL,
-            'uganda_license.connect_timeout' => 10,
+            'uganda_license.connect_timeout' => 5,
             'uganda_license.timeout' => 20,
+            'uganda_license.retry_delay_ms' => 250,
             'uganda_license.diagnostics' => false,
         ]);
     }
@@ -258,6 +260,138 @@ class UgandaLicenseVerificationServiceTest extends TestCase
         $this->assertSame('unable_to_verify', $result['status']);
         $this->assertSame(2, $searchAttempts);
         Http::assertSentCount(1);
+    }
+
+    public function test_connection_retry_uses_the_next_dns_address_and_preserves_session_cookies(): void
+    {
+        $service = new class extends UgandaLicenseVerificationService
+        {
+            public array $attemptedIps = [];
+
+            protected function portalIpAddresses(): array
+            {
+                return ['192.0.2.10', '192.0.2.11'];
+            }
+
+            protected function pendingRequest(CookieJar $cookieJar, ?string $referer = null, ?string $portalIp = null)
+            {
+                $this->attemptedIps[] = $portalIp;
+
+                return parent::pendingRequest($cookieJar, $referer, $portalIp);
+            }
+        };
+        $searchAttempts = 0;
+        $results = $this->resultHtml([
+            'profession' => 'Physician',
+            'registration_number' => 'K6918',
+        ]);
+        Http::fake(function (Request $request) use (&$searchAttempts, $results) {
+            if (parse_url($request->url(), PHP_URL_PATH) === '/index.php/search/') {
+                return Http::response($this->searchFormHtml(), 200, [
+                    'Set-Cookie' => 'portal-session=test-session; Path=/; HttpOnly; Secure',
+                ]);
+            }
+
+            $searchAttempts++;
+            if ($searchAttempts === 1) {
+                throw new ConnectionException('cURL error 28: Connection timed out');
+            }
+
+            return Http::response($results);
+        });
+
+        $result = $service->verify('K6918');
+
+        $this->assertSame('verified', $result['status']);
+        $this->assertSame(['192.0.2.10', '192.0.2.10', '192.0.2.11'], $service->attemptedIps);
+        $this->assertSame(2, $searchAttempts);
+        $requests = Http::recorded()->map(fn (array $record): Request => $record[0]);
+        $this->assertCount(2, $requests);
+        $this->assertSame(self::INITIAL_URL, $requests[0]->url());
+        $this->assertTrue($requests[1]->hasHeader('Cookie'));
+        $this->assertStringContainsString('portal-session=', $requests[1]->header('Cookie')[0]);
+    }
+
+    public function test_ssl_certificate_failure_logs_ca_configuration_and_keeps_verification_enabled(): void
+    {
+        config([
+            'uganda_license.ca_bundle_path' => resource_path('certificates/uganda-sectigo-r36-intermediate.pem'),
+            'uganda_license.diagnostics' => true,
+        ]);
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(function (string $message, array $context): bool {
+                $this->assertSame('Uganda UMDPC license verification connection failed', $message);
+                $this->assertSame('initial_search_page', $context['request_stage']);
+                $this->assertSame(60, $context['curl_error_number']);
+                $this->assertStringContainsString('unable to get local issuer certificate', $context['curl_error_message']);
+                $this->assertSame(realpath(resource_path('certificates/uganda-sectigo-r36-intermediate.pem')), $context['resolved_ca_bundle_path']);
+                $this->assertTrue($context['configured_ca_bundle_exists']);
+                $this->assertTrue($context['configured_ca_bundle_readable']);
+                $this->assertTrue($context['configured_ca_bundle_valid']);
+                $this->assertTrue($context['ssl_verification_enabled']);
+                $this->assertStringNotContainsString('K6918', json_encode($context));
+
+                return true;
+            });
+        Log::shouldReceive('notice')
+            ->once()
+            ->withArgs(fn (string $message, array $context): bool => $message === 'Uganda UMDPC connection attempt failed; trying the next portal address'
+                && $context['request_stage'] === 'initial_search_page'
+                && $context['connection_attempt'] === 1);
+        Http::fake(fn () => throw new ConnectionException(
+            'cURL error 60: SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)'
+        ));
+
+        $result = app(UgandaLicenseVerificationService::class)->verify('K6918');
+
+        $this->assertSame('unable_to_verify', $result['status']);
+    }
+
+    public function test_missing_ca_bundle_logs_fallback_and_never_disables_ssl_verification(): void
+    {
+        config(['uganda_license.ca_bundle_path' => base_path('missing-uganda-cacert.pem')]);
+        Log::shouldReceive('warning')
+            ->twice()
+            ->withArgs(function (string $message, array $context): bool {
+                $this->assertTrue($context['ssl_verification_enabled']);
+                $this->assertFalse($context['configured_ca_bundle_exists']);
+                $this->assertFalse($context['configured_ca_bundle_readable']);
+                if ($message !== 'Uganda UMDPC configured CA bundle is missing, unreadable, or invalid; SSL verification remains enabled') {
+                    $this->assertSame('Uganda UMDPC license verification connection failed', $message);
+                    $this->assertSame('php_curl_ini', $context['ca_bundle_source']);
+                }
+
+                return true;
+            });
+        Http::fake(fn () => throw new ConnectionException('cURL error 60: unable to get local issuer certificate'));
+
+        $result = app(UgandaLicenseVerificationService::class)->verify('K6918');
+
+        $this->assertSame('unable_to_verify', $result['status']);
+    }
+
+    public function test_invalid_ca_bundle_logs_fallback_without_disabling_ssl_verification(): void
+    {
+        config(['uganda_license.ca_bundle_path' => base_path('composer.json')]);
+        Log::shouldReceive('warning')
+            ->twice()
+            ->withArgs(function (string $message, array $context): bool {
+                $this->assertTrue($context['ssl_verification_enabled']);
+                $this->assertTrue($context['configured_ca_bundle_exists']);
+                $this->assertTrue($context['configured_ca_bundle_readable']);
+                $this->assertFalse($context['configured_ca_bundle_valid']);
+                if ($message !== 'Uganda UMDPC configured CA bundle is missing, unreadable, or invalid; SSL verification remains enabled') {
+                    $this->assertSame('Uganda UMDPC license verification connection failed', $message);
+                }
+
+                return true;
+            });
+        Http::fake(fn () => throw new ConnectionException('cURL error 60: unable to get local issuer certificate'));
+
+        $result = app(UgandaLicenseVerificationService::class)->verify('K6918');
+
+        $this->assertSame('unable_to_verify', $result['status']);
     }
 
     public function test_unexpected_html_is_unable_to_verify(): void

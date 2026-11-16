@@ -7,7 +7,6 @@
     <div class="page-header mb-4">
         <div>
             <h3 class="page-title">License Verification</h3>
-            <p class="text-muted mb-0">U.S. physician licenses are checked with DoctorLicenseLookup first. Massachusetts uses this source directly; supported states use existing state sources if it is unavailable. Other countries use their existing verification services.</p>
         </div>
     </div>
 
@@ -29,6 +28,7 @@
                             <option value="GH">Ghana</option>
                             <option value="UG">Uganda</option>
                             <option value="TZ">Tanzania</option>
+                            <option value="SS">South Sudan</option>
                             <option value="UK">United Kingdom</option>
                         </select>
                         <div class="invalid-feedback" data-error-for="country"></div>
@@ -172,7 +172,7 @@
         ].includes(normalized) || normalized.endsWith('metaid');
     }
 
-    function appendDataRows(container, data, prefix = '', depth = 0) {
+    function appendDataRows(container, data, prefix = '', depth = 0, seenNameValues = new Set()) {
         if (!data || typeof data !== 'object' || depth > 5) {
             return;
         }
@@ -192,12 +192,24 @@
                         addDataRow(container, label, value.filter((item) => item !== null).join(', '));
                     }
                 } else {
-                    appendDataRows(container, value, label, depth + 1);
+                    appendDataRows(container, value, label, depth + 1, seenNameValues);
                 }
                 return;
             }
 
-            addDataRow(container, label, typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value));
+            const normalizedKey = String(key).toLowerCase();
+            const duplicateNameKeys = ['full_name', 'name', 'practitioner_name', 'doctor_name', 'physician_name'];
+            const valueText = typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value).trim();
+
+            if (duplicateNameKeys.includes(normalizedKey) && valueText) {
+                const valueKey = valueText.toLowerCase();
+                if (seenNameValues.has(valueKey)) {
+                    return;
+                }
+                seenNameValues.add(valueKey);
+            }
+
+            addDataRow(container, label, valueText);
         });
     }
 

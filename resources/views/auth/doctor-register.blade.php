@@ -350,6 +350,7 @@
                                             <option value="GH">Ghana</option>
                                             <option value="UG">Uganda</option>
                                             <option value="TZ">Tanzania</option>
+                                            <option value="SS">South Sudan</option>
                                         </select>
                                         <div class="invalid-feedback">Select your country</div>
                                     </div>
@@ -365,6 +366,7 @@
                                             <option value="UG" data-country="UG">Uganda (UG)</option>
                                             <option value="TZ" data-country="TZ">Tanzania (TZ)</option>
                                             <option value="TZ" data-country="TZ">Tanzania (TZ)</option>
+                                            <option value="SS" data-country="SS">South Sudan (SS)</option>
                                         </select>
                                         <div class="invalid-feedback">Select your license state</div>
                                     </div>
@@ -379,6 +381,9 @@
                                     </div>
                                     <div id="tanzania-license-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">The MCT lookup uses the registration number as the primary search identifier. Records that are expired or not approved will not be treated as active physician credentials.</p>
+                                    </div>
+                                    <div id="south-sudan-license-fields" class="col-12 d-none">
+                                        <p class="text-muted mb-2">The SSGMC registry must confirm the submitted number as a Medical Doctor record before registration can proceed.</p>
                                     </div>
                                     <div id="uk-registration-fields" class="col-12 d-none">
                                         <p class="text-muted mb-2">GMC registration is checked using your GMC number.</p>

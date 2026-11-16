@@ -9,6 +9,7 @@ use App\Services\GmcUkVerificationService;
 use App\Services\IndiaNmcLicenseVerificationService;
 use App\Services\DoctorLicenseLookupService;
 use App\Services\PmdcLicenseVerificationService;
+use App\Services\SouthSudanGmcLicenseVerificationService;
 use App\Services\TanzaniaLicenseVerificationService;
 use App\Services\UgandaLicenseVerificationService;
 use App\Services\USLicenseVerificationOrchestrator;
@@ -36,7 +37,8 @@ class LicenseVerificationController extends Controller
         GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier,
         UgandaLicenseVerificationService $ugandaLicenseVerifier,
         TanzaniaLicenseVerificationService $tanzaniaLicenseVerifier,
-        GmcUkVerificationService $gmcUkLicenseVerifier
+        GmcUkVerificationService $gmcUkLicenseVerifier,
+        SouthSudanGmcLicenseVerificationService $southSudanLicenseVerifier
     ) {
         abort_unless($request->user()?->role === 'admin', 403);
 
@@ -49,14 +51,15 @@ class LicenseVerificationController extends Controller
         $isGhana = $country === 'GH';
         $isUganda = $country === 'UG';
         $isTanzania = $country === 'TZ';
+        $isSouthSudan = $country === 'SS';
         $isUk = $country === 'UK';
         $stateOptions = $country === 'US'
             ? array_keys(config('doctor_lookup.states', []))
-            : ($isIndia ? ['IN'] : ($isGhana ? ['GH'] : ($isUganda ? ['UG'] : ($isTanzania ? ['TZ'] : ($isUk ? ['UK'] : $supportedStates)))));
+            : ($isIndia ? ['IN'] : ($isGhana ? ['GH'] : ($isUganda ? ['UG'] : ($isTanzania ? ['TZ'] : ($isSouthSudan ? ['SS'] : ($isUk ? ['UK'] : $supportedStates))))));
 
         $validated = $request->validate([
-            'country' => ['required', Rule::in(['US', 'IN', 'GH', 'UG', 'TZ', 'UK'])],
-            'state' => [$isIndia || $isGhana || $isUganda || $isTanzania || $isUk ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
+            'country' => ['required', Rule::in(['US', 'IN', 'GH', 'UG', 'TZ', 'UK', 'SS'])],
+            'state' => [$isIndia || $isGhana || $isUganda || $isTanzania || $isSouthSudan || $isUk ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
             'license_number' => $isUk ? ['required', 'digits:7'] : ['required', 'string', 'max:255'],
             'license_type' => ['nullable', Rule::in(['Full Physician', 'Limited Physician', 'Temporary Physician'])],
             'license_issue_date' => ['nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
@@ -115,6 +118,22 @@ class LicenseVerificationController extends Controller
                 'official_data' => $verification['official_data'],
                 'checked_at' => $checkedAt,
             ]);
+        } elseif ($isSouthSudan) {
+            $verification = $southSudanLicenseVerifier->verify($validated['license_number']);
+            $checkedAt = now();
+
+            LicenseVerificationAttempt::create([
+                'actor_user_id' => $request->user()->id,
+                'applicant_name' => $verification['official_data']['full_name'] ?? 'Unknown',
+                'license_state' => 'SS',
+                'license_type' => 'SSGMC Physician Registration',
+                'license_number' => $validated['license_number'],
+                'status' => $verification['status'],
+                'message' => $verification['message'],
+                'source' => $verification['source'],
+                'official_data' => $verification['official_data'],
+                'checked_at' => $checkedAt,
+            ]);
         } elseif ($isIndia) {
             $verification = $indiaNmcLicenseVerifier->verify($validated['license_number']);
         } else {
@@ -138,7 +157,7 @@ class LicenseVerificationController extends Controller
             'message' => $verification['message'],
             'source' => $verification['source'] ?? null,
             'official_data' => $officialData,
-            'checked_at' => $isGhana ? $checkedAt->toIso8601String() : null,
+            'checked_at' => isset($checkedAt) ? $checkedAt->toIso8601String() : null,
         ]);
     }
 
