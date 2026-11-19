@@ -8,12 +8,12 @@ use PHPUnit\Framework\TestCase;
 
 class GmcUkVerificationServiceTest extends TestCase
 {
-    public function test_matching_gmc_record_can_be_verified_using_name_and_submitted_number(): void
+    public function test_matching_gmc_record_can_be_verified_using_the_submitted_number_only(): void
     {
         $source = new class implements GmcUkRegistrationSource {
             public ?string $requestedGmcNumber = 'not-requested';
 
-            public function find(string $fullName, ?string $gmcNumber = null): ?array
+            public function find(string $gmcNumber): ?array
             {
                 $this->requestedGmcNumber = $gmcNumber;
 
@@ -33,19 +33,19 @@ class GmcUkVerificationServiceTest extends TestCase
         };
 
         $result = (new GmcUkVerificationService($source))->verify([
-            'name' => 'Alice Smith',
             'gmc_registration_number' => '1234567',
         ]);
 
         $this->assertSame('verified', $result['status']);
         $this->assertSame('1234567', $result['official_data']['gmc_number']);
         $this->assertSame('1234567', $source->requestedGmcNumber);
+        $this->assertArrayNotHasKey('raw_text', $result['official_data']);
     }
 
     public function test_mismatched_gmc_number_fails_verification(): void
     {
         $source = new class implements GmcUkRegistrationSource {
-            public function find(string $fullName, ?string $gmcNumber = null): ?array
+            public function find(string $gmcNumber): ?array
             {
                 return [[
                     'full_name' => 'Alice Smith',
@@ -63,7 +63,6 @@ class GmcUkVerificationServiceTest extends TestCase
         };
 
         $result = (new GmcUkVerificationService($source))->verify([
-            'name' => 'Alice Smith',
             'gmc_registration_number' => '7654321',
         ]);
 
@@ -74,7 +73,7 @@ class GmcUkVerificationServiceTest extends TestCase
     public function test_missing_gmc_number_fails_verification_without_searching(): void
     {
         $source = new class implements GmcUkRegistrationSource {
-            public function find(string $fullName, ?string $gmcNumber = null): ?array
+            public function find(string $gmcNumber): ?array
             {
                 throw new \RuntimeException('Search should not run without a GMC number.');
             }
@@ -86,17 +85,38 @@ class GmcUkVerificationServiceTest extends TestCase
         };
 
         $result = (new GmcUkVerificationService($source))->verify([
-            'name' => 'Alice Smith',
         ]);
 
         $this->assertSame('failed', $result['status']);
         $this->assertStringContainsString('required', $result['message']);
     }
 
-    public function test_matching_number_verifies_name_with_omitted_middle_names(): void
+    public function test_invalid_gmc_number_fails_without_searching(): void
     {
         $source = new class implements GmcUkRegistrationSource {
-            public function find(string $fullName, ?string $gmcNumber = null): ?array
+            public function find(string $gmcNumber): ?array
+            {
+                throw new \RuntimeException('Search should not run with an invalid GMC number.');
+            }
+
+            public function sourceName(): string
+            {
+                return 'Fake GMC Register';
+            }
+        };
+
+        $result = (new GmcUkVerificationService($source))->verify([
+            'gmc_registration_number' => '1234ABC',
+        ]);
+
+        $this->assertSame('failed', $result['status']);
+        $this->assertStringContainsString('seven-digit', $result['message']);
+    }
+
+    public function test_matching_number_verifies_without_a_submitted_name(): void
+    {
+        $source = new class implements GmcUkRegistrationSource {
+            public function find(string $gmcNumber): ?array
             {
                 return [[
                     'full_name' => 'Martin Ivo Metombe Ngomba',
@@ -114,17 +134,16 @@ class GmcUkVerificationServiceTest extends TestCase
         };
 
         $result = (new GmcUkVerificationService($source))->verify([
-            'name' => 'Martin Ngomba',
             'gmc_registration_number' => '1234567',
         ]);
 
         $this->assertSame('verified', $result['status']);
     }
 
-    public function test_mismatched_number_fails_even_when_multiple_name_matches_are_returned(): void
+    public function test_mismatched_number_fails_even_when_other_records_are_returned(): void
     {
         $source = new class implements GmcUkRegistrationSource {
-            public function find(string $fullName, ?string $gmcNumber = null): ?array
+            public function find(string $gmcNumber): ?array
             {
                 return [
                     [
@@ -151,7 +170,6 @@ class GmcUkVerificationServiceTest extends TestCase
         };
 
         $result = (new GmcUkVerificationService($source))->verify([
-            'name' => 'Alice Smith',
             'gmc_registration_number' => '9999999',
         ]);
 

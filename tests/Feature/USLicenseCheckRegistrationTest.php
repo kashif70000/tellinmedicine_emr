@@ -28,6 +28,7 @@ class USLicenseCheckRegistrationTest extends TestCase
         $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
 
         config([
+            'doctor_lookup.enabled' => false,
             'uslicensecheck.base_url' => 'https://uslicensecheck.test/api/v1',
             'uslicensecheck.api_key' => 'test-key-not-a-secret',
             'uslicensecheck.supported_states' => ['OH', 'CT', 'CO', 'DE', 'TX', 'IL', 'NH', 'AK', 'WA', 'KS'],
@@ -39,9 +40,12 @@ class USLicenseCheckRegistrationTest extends TestCase
     {
         $this->get(route('register.doctor'))
             ->assertOk()
+            ->assertSee('<option value="CA">California (CA)</option>', false)
             ->assertSee('<option value="KS">Kansas (KS)</option>', false)
             ->assertSee('<option value="NH">New Hampshire (NH)</option>', false)
-            ->assertSee('<option value="MT">Montana (MT)</option>', false);
+            ->assertSee('<option value="MT">Montana (MT)</option>', false)
+            ->assertDontSee('massachusetts-license-fields')
+            ->assertDontSee('doctor-license-type');
         $this->assertNotContains('MT', config('uslicensecheck.supported_states'));
     }
 
@@ -73,6 +77,119 @@ class USLicenseCheckRegistrationTest extends TestCase
                 'license_number' => 'OH123456',
                 'source_state' => 'OH',
             ]);
+    }
+
+    public function test_primary_lookup_approves_registration_without_calling_fallback(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/ohio/search' => Http::response([
+                'success' => true,
+                'data' => [
+                    'license_no' => 'OH123456',
+                    'name' => 'Alice Smith',
+                ],
+            ]),
+            self::ENDPOINT => Http::response($this->record(['multiple' => null])),
+        ]);
+
+        $this->postJson(route('register.doctor.store'), $this->application())
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('verification_pending', false);
+        $this->assertDatabaseHas('doctors', [
+            'license_state' => 'OH',
+            'license_verification_status' => 'verified',
+            'license_verification_source' => 'DoctorLicenseLookup',
+            'is_verified' => true,
+            'verification_status' => 'approved',
+        ]);
+        Http::assertSentCount(2);
+        $this->assertSame(
+            [
+                'https://doctorlicenselookup.test/state/ohio',
+                'https://doctorlicenselookup.test/ohio/search',
+            ],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
+    }
+
+    public function test_massachusetts_registration_uses_doctor_lookup_without_legacy_fields(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/massachusetts' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/massachusetts/search' => Http::response([
+                'success' => true,
+                'data' => [
+                    'license_no' => 'MA123456',
+                    'name' => 'Alice Smith',
+                ],
+            ]),
+        ]);
+
+        $this->postJson(route('register.doctor.store'), $this->application([
+            'license_state' => 'MA',
+            'license_number' => 'MA123456',
+        ]))->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('verification_pending', false);
+
+        $this->assertDatabaseHas('doctors', [
+            'license_state' => 'MA',
+            'license_number' => 'MA123456',
+            'license_verification_status' => 'verified',
+            'license_verification_source' => 'DoctorLicenseLookup',
+            'is_verified' => true,
+            'verification_status' => 'approved',
+        ]);
+        Http::assertSentCount(2);
+        $this->assertSame(
+            [
+                'https://doctorlicenselookup.test/state/massachusetts',
+                'https://doctorlicenselookup.test/massachusetts/search',
+            ],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
+    }
+
+    public function test_massachusetts_registration_verification_requires_only_state_and_license_number(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/massachusetts' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/massachusetts/search' => Http::response([
+                'success' => true,
+                'data' => [
+                    'license_no' => 'MA123456',
+                    'name' => 'Alice Smith',
+                ],
+            ]),
+        ]);
+
+        $this->postJson(route('register.doctor.verify-license'), [
+            'license_state' => 'MA',
+            'license_number' => 'MA123456',
+        ])->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('status', 'verified');
+        Http::assertSentCount(2);
     }
 
     public function test_matching_new_hampshire_license_registers_using_the_official_portal(): void
@@ -156,7 +273,23 @@ class USLicenseCheckRegistrationTest extends TestCase
 
     public function test_matching_record_returns_verified_from_the_registration_verification_endpoint(): void
     {
-        Http::fake([self::ENDPOINT => Http::response($this->record(['multiple' => null]))]);
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/ohio/search' => Http::response([
+                'success' => true,
+                'data' => [
+                    'license_no' => 'OH123456',
+                    'name' => 'Alice Smith',
+                ],
+            ]),
+            self::ENDPOINT => Http::response($this->record(['multiple' => null])),
+        ]);
 
         $this->postJson(route('register.doctor.verify-license'), [
             'name' => 'Alice Smith',
@@ -165,8 +298,138 @@ class USLicenseCheckRegistrationTest extends TestCase
         ])->assertOk()
             ->assertJsonPath('success', true)
             ->assertJsonPath('status', 'verified')
-            ->assertJsonPath('official_data.found', true)
-            ->assertJsonPath('official_data.multiple', null);
+            ->assertJsonPath('official_data.license_no', 'OH123456');
+        Http::assertSentCount(2);
+        $this->assertSame(
+            [
+                'https://doctorlicenselookup.test/state/ohio',
+                'https://doctorlicenselookup.test/ohio/search',
+            ],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
+    }
+
+    public function test_registration_uses_existing_state_fallback_after_primary_technical_failure(): void
+    {
+        config([
+        'doctor_lookup.enabled' => true,
+        'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+        'https://doctorlicenselookup.test/state/ohio' => Http::response('temporarily unavailable', 503),
+        self::ENDPOINT => Http::response($this->record(['multiple' => null])),
+        ]);
+
+        $this->postJson(route('register.doctor.verify-license'), [
+        'name' => 'Alice Smith',
+        'license_state' => 'OH',
+        'license_number' => 'OH123456',
+        ])->assertOk()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('status', 'verified');
+        Http::assertSentCount(2);
+        $this->assertSame(
+            ['https://doctorlicenselookup.test/state/ohio', self::ENDPOINT],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
+    }
+
+    public function test_registration_does_not_fall_back_after_primary_not_found_result(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/ohio/search' => Http::response([
+                'success' => false,
+                'no_results' => true,
+            ]),
+            self::ENDPOINT => Http::response($this->record(['multiple' => null])),
+        ]);
+
+        $this->postJson(route('register.doctor.verify-license'), [
+            'name' => 'Alice Smith',
+            'license_state' => 'OH',
+            'license_number' => 'missing',
+        ])->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'not_found');
+        Http::assertSentCount(2);
+    }
+
+    public function test_registration_keeps_masked_primary_result_in_manual_review(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/ohio/search' => Http::response([
+                'success' => true,
+                'data' => ['license_no' => '*****3456'],
+            ]),
+            self::ENDPOINT => Http::response($this->record(['multiple' => null])),
+        ]);
+
+        $this->postJson(route('register.doctor.verify-license'), [
+            'name' => 'Alice Smith',
+            'license_state' => 'OH',
+            'license_number' => 'OH123456',
+        ])->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'manual_review');
+        Http::assertSentCount(2);
+    }
+
+    public function test_registration_returns_unable_to_verify_for_state_without_fallback(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/california' => Http::response('temporarily unavailable', 503),
+            self::ENDPOINT => Http::response($this->record(['multiple' => null])),
+        ]);
+
+        $this->postJson(route('register.doctor.verify-license'), [
+            'name' => 'Alice Smith',
+            'license_state' => 'CA',
+            'license_number' => 'CA123456',
+        ])->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'unable_to_verify');
+        Http::assertSentCount(1);
+    }
+
+    public function test_registration_stays_pending_when_primary_is_unavailable_for_state_without_fallback(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/california' => Http::response('temporarily unavailable', 503),
+        ]);
+
+        $this->postJson(route('register.doctor.store'), $this->application([
+            'license_state' => 'CA',
+        ]))->assertOk()
+            ->assertJsonPath('verification_pending', true);
+        $this->assertDatabaseHas('doctors', [
+            'license_state' => 'CA',
+            'license_verification_status' => 'unable_to_verify',
+            'is_verified' => false,
+            'verification_status' => 'pending',
+        ]);
+        Http::assertSentCount(1);
     }
 
     public function test_inconclusive_provider_result_registers_only_for_manual_review(): void
@@ -230,7 +493,7 @@ class USLicenseCheckRegistrationTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('license_state');
 
-        $this->postJson(route('register.doctor.store'), $this->application(['license_state' => 'CA']))
+        $this->postJson(route('register.doctor.store'), $this->application(['license_state' => 'XX']))
             ->assertUnprocessable()
             ->assertJsonValidationErrors('license_state');
 

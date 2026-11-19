@@ -29,6 +29,7 @@ class FloridaLicenseVerificationTest extends TestCase
     {
         parent::setUp();
         $this->withoutMiddleware(ValidateCsrfToken::class);
+        config(['doctor_lookup.enabled' => false]);
     }
 
     public function test_florida_search_uses_browser_session_and_parses_the_official_record(): void

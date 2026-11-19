@@ -5,12 +5,14 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\LicenseVerificationAttempt;
 use App\Services\GhanaGmrLicenseVerificationService;
+use App\Services\GmcUkVerificationService;
 use App\Services\IndiaNmcLicenseVerificationService;
-use App\Services\MassachusettsLicenseVerificationService;
+use App\Services\DoctorLicenseLookupService;
 use App\Services\PmdcLicenseVerificationService;
+use App\Services\SouthSudanGmcLicenseVerificationService;
 use App\Services\TanzaniaLicenseVerificationService;
 use App\Services\UgandaLicenseVerificationService;
-use App\Services\USLicenseCheckVerificationService;
+use App\Services\USLicenseVerificationOrchestrator;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -20,27 +22,23 @@ class LicenseVerificationController extends Controller
     {
         abort_unless($request->user()?->role === 'admin', 403);
 
-        $states = ['MA' => config('uslicensecheck.states.MA', 'Massachusetts')];
-        foreach (config('uslicensecheck.supported_states', []) as $stateCode) {
-            if (isset(config('uslicensecheck.states')[$stateCode])) {
-                $states[$stateCode] = config('uslicensecheck.states.'.$stateCode);
-            }
-        }
-        $states['KS'] = config('uslicensecheck.states.KS', 'Kansas');
-        $states['MT'] = config('uslicensecheck.states.MT', 'Montana');
-        $states['FL'] = config('uslicensecheck.states.FL', 'Florida');
+        $states = array_map(
+            static fn (array $state): string => $state['name'],
+            app(DoctorLicenseLookupService::class)->getStates()
+        );
 
         return view('admin.license-verification', compact('states'));
     }
 
     public function verify(
         Request $request,
-        MassachusettsLicenseVerificationService $massachusettsVerifier,
-        USLicenseCheckVerificationService $usLicenseVerifier,
+        USLicenseVerificationOrchestrator $usLicenseVerifier,
         IndiaNmcLicenseVerificationService $indiaNmcLicenseVerifier,
         GhanaGmrLicenseVerificationService $ghanaGmrLicenseVerifier,
         UgandaLicenseVerificationService $ugandaLicenseVerifier,
-        TanzaniaLicenseVerificationService $tanzaniaLicenseVerifier
+        TanzaniaLicenseVerificationService $tanzaniaLicenseVerifier,
+        GmcUkVerificationService $gmcUkLicenseVerifier,
+        SouthSudanGmcLicenseVerificationService $southSudanLicenseVerifier
     ) {
         abort_unless($request->user()?->role === 'admin', 403);
 
@@ -49,23 +47,30 @@ class LicenseVerificationController extends Controller
             config('uslicensecheck.supported_states', [])
         )));
         $country = strtoupper((string) $request->input('country'));
-        $isMassachusetts = $request->input('state') === 'MA';
         $isIndia = $country === 'IN';
         $isGhana = $country === 'GH';
         $isUganda = $country === 'UG';
         $isTanzania = $country === 'TZ';
-        $stateOptions = $isIndia ? ['IN'] : ($isGhana ? ['GH'] : ($isUganda ? ['UG'] : ($isTanzania ? ['TZ'] : $supportedStates)));
+        $isSouthSudan = $country === 'SS';
+        $isUk = $country === 'UK';
+        $stateOptions = $country === 'US'
+            ? array_keys(config('doctor_lookup.states', []))
+            : ($isIndia ? ['IN'] : ($isGhana ? ['GH'] : ($isUganda ? ['UG'] : ($isTanzania ? ['TZ'] : ($isSouthSudan ? ['SS'] : ($isUk ? ['UK'] : $supportedStates))))));
 
         $validated = $request->validate([
-            'country' => ['required', Rule::in(['US', 'IN', 'GH', 'UG', 'TZ'])],
-            'state' => [$isIndia || $isGhana || $isUganda || $isTanzania ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
-            'license_number' => ['required', 'string', 'max:255'],
-            'license_type' => [$isMassachusetts ? 'required' : 'nullable', Rule::in(['Full Physician', 'Limited Physician', 'Temporary Physician'])],
-            'license_issue_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
-            'license_expiration_date' => [$isMassachusetts ? 'required' : 'nullable', 'date_format:Y-m-d', 'after:license_issue_date'],
+            'country' => ['required', Rule::in(['US', 'IN', 'GH', 'UG', 'TZ', 'UK', 'SS'])],
+            'state' => [$isIndia || $isGhana || $isUganda || $isTanzania || $isSouthSudan || $isUk ? 'nullable' : 'required', 'string', Rule::in($stateOptions)],
+            'license_number' => $isUk ? ['required', 'digits:7'] : ['required', 'string', 'max:255'],
+            'license_type' => ['nullable', Rule::in(['Full Physician', 'Limited Physician', 'Temporary Physician'])],
+            'license_issue_date' => ['nullable', 'date_format:Y-m-d', 'before_or_equal:today'],
+            'license_expiration_date' => ['nullable', 'date_format:Y-m-d', 'after:license_issue_date'],
         ]);
 
-        if ($isGhana) {
+        if ($isUk) {
+            $verification = $gmcUkLicenseVerifier->verify([
+                'gmc_registration_number' => $validated['license_number'],
+            ]);
+        } elseif ($isGhana) {
             $verification = $ghanaGmrLicenseVerifier->verify($validated['license_number']);
             $checkedAt = now();
 
@@ -113,21 +118,37 @@ class LicenseVerificationController extends Controller
                 'official_data' => $verification['official_data'],
                 'checked_at' => $checkedAt,
             ]);
+        } elseif ($isSouthSudan) {
+            $verification = $southSudanLicenseVerifier->verify($validated['license_number']);
+            $checkedAt = now();
+
+            LicenseVerificationAttempt::create([
+                'actor_user_id' => $request->user()->id,
+                'applicant_name' => $verification['official_data']['full_name'] ?? 'Unknown',
+                'license_state' => 'SS',
+                'license_type' => 'SSGMC Physician Registration',
+                'license_number' => $validated['license_number'],
+                'status' => $verification['status'],
+                'message' => $verification['message'],
+                'source' => $verification['source'],
+                'official_data' => $verification['official_data'],
+                'checked_at' => $checkedAt,
+            ]);
         } elseif ($isIndia) {
             $verification = $indiaNmcLicenseVerifier->verify($validated['license_number']);
-        } elseif ($isMassachusetts) {
-            $verification = $massachusettsVerifier->verify([
-                'license_state' => 'MA',
-                'license_number' => $validated['license_number'],
-                'license_type' => $validated['license_type'],
-                'license_issue_date' => $validated['license_issue_date'],
-                'license_expiration_date' => $validated['license_expiration_date'],
-            ]);
         } else {
             $verification = $usLicenseVerifier->verify([
                 'license_state' => $validated['state'],
                 'license_number' => $validated['license_number'],
+                'license_type' => $validated['license_type'] ?? null,
+                'license_issue_date' => $validated['license_issue_date'] ?? null,
+                'license_expiration_date' => $validated['license_expiration_date'] ?? null,
             ]);
+        }
+
+        $officialData = $verification['official_data'] ?? null;
+        if ($isUk && is_array($officialData)) {
+            unset($officialData['raw_text']);
         }
 
         return response()->json([
@@ -135,8 +156,8 @@ class LicenseVerificationController extends Controller
             'status' => $verification['status'],
             'message' => $verification['message'],
             'source' => $verification['source'] ?? null,
-            'official_data' => $verification['official_data'] ?? null,
-            'checked_at' => $isGhana ? $checkedAt->toIso8601String() : null,
+            'official_data' => $officialData,
+            'checked_at' => isset($checkedAt) ? $checkedAt->toIso8601String() : null,
         ]);
     }
 

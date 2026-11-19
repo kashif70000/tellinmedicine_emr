@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use Carbon\CarbonImmutable;
 use Throwable;
 
 class GmcUkVerificationService
@@ -12,17 +11,7 @@ class GmcUkVerificationService
     public function verify(array $application): array
     {
         $sourceName = $this->source->sourceName();
-        $name = trim((string) ($application['name'] ?? ''));
         $gmcNumber = trim((string) ($application['gmc_registration_number'] ?? $application['gmc_number'] ?? ''));
-
-        if ($name === '') {
-            return [
-                'status' => 'manual_review',
-                'message' => 'The doctor name is required before GMC verification can proceed.',
-                'source' => $sourceName,
-                'official_data' => null,
-            ];
-        }
 
         if ($gmcNumber === '') {
             return [
@@ -33,17 +22,17 @@ class GmcUkVerificationService
             ];
         }
 
-        if ($this->normalizeNumeric($gmcNumber) === '') {
+        if (preg_match('/^\d{7}$/', $gmcNumber) !== 1) {
             return [
                 'status' => 'failed',
-                'message' => 'Enter a valid GMC registration number.',
+                'message' => 'Enter a valid seven-digit GMC registration number.',
                 'source' => $sourceName,
                 'official_data' => null,
             ];
         }
 
         try {
-            $records = $this->source->find($name, $gmcNumber !== '' ? $gmcNumber : null);
+            $records = $this->source->find($gmcNumber);
         } catch (Throwable) {
             return [
                 'status' => 'unavailable',
@@ -65,7 +54,7 @@ class GmcUkVerificationService
         if ($records === [] || empty($records)) {
             return [
                 'status' => 'failed',
-                'message' => 'No matching GMC registration record was found for the submitted doctor name.',
+                'message' => 'No GMC registration record was found for the submitted number.',
                 'source' => $sourceName,
                 'official_data' => null,
             ];
@@ -78,23 +67,22 @@ class GmcUkVerificationService
         if ($numberMatches === []) {
             return [
                 'status' => 'failed',
-                'message' => 'The GMC number does not match any record returned for the submitted name. Check the name and GMC number, then try again.',
+                'message' => 'The GMC number does not match any record returned by the register.',
                 'source' => $sourceName,
                 'official_data' => null,
             ];
         }
 
-        $best = $this->pickBestMatch($name, $gmcNumber, $numberMatches);
-
-        if ($best === null) {
+        if (count($numberMatches) !== 1) {
             return [
                 'status' => 'manual_review',
-                'message' => 'Multiple similar GMC records were returned and require administrative review.',
+                'message' => 'Multiple GMC records were returned for this number and require administrative review.',
                 'source' => $sourceName,
-                'official_data' => $candidates,
+                'official_data' => null,
             ];
         }
 
+        $best = $numberMatches[0];
         $officialData = [
             'full_name' => (string) ($best['full_name'] ?? ''),
             'gmc_number' => (string) ($best['gmc_number'] ?? ''),
@@ -102,7 +90,6 @@ class GmcUkVerificationService
             'registration_status' => $best['registration_status'] ?? null,
             'licence_status' => $best['licence_status'] ?? null,
             'source_url' => $best['source_url'] ?? null,
-            'raw_text' => $best['raw_text'] ?? null,
         ];
 
         if (! $this->isTrustedProfileUrl($officialData['profile_url'])) {
@@ -114,28 +101,10 @@ class GmcUkVerificationService
             ];
         }
 
-        if ($this->normalizeName($officialData['full_name']) === '') {
-            return [
-                'status' => 'manual_review',
-                'message' => 'The GMC result did not provide a usable doctor name.',
-                'source' => $sourceName,
-                'official_data' => $officialData,
-            ];
-        }
-
-        if ($gmcNumber !== '' && $this->normalizeNumeric($officialData['gmc_number']) !== $this->normalizeNumeric($gmcNumber)) {
+        if ($this->normalizeNumeric($officialData['gmc_number']) !== $this->normalizeNumeric($gmcNumber)) {
             return [
                 'status' => 'failed',
-                'message' => 'The GMC number does not match the record found for the submitted name. Check the name and GMC number, then try again.',
-                'source' => $sourceName,
-                'official_data' => $officialData,
-            ];
-        }
-
-        if (! $this->namesMatch($name, (string) $officialData['full_name'])) {
-            return [
-                'status' => 'manual_review',
-                'message' => 'The GMC record name differs from the submitted doctor name and requires manual review.',
+                'message' => 'The GMC number does not match the record returned by the register.',
                 'source' => $sourceName,
                 'official_data' => $officialData,
             ];
@@ -201,85 +170,10 @@ class GmcUkVerificationService
 
         return [
             'status' => 'verified',
-            'message' => 'The GMC registration record was verified against the submitted doctor details.',
+            'message' => 'The GMC registration record was verified using the submitted GMC number.',
             'source' => $sourceName,
             'official_data' => $officialData,
         ];
-    }
-
-    private function pickBestMatch(string $name, string $gmcNumber, array $records): ?array
-    {
-        $normalizedName = $this->normalizeName($name);
-        $normalizedNumber = $this->normalizeNumeric($gmcNumber);
-
-        $score = [];
-        foreach ($records as $record) {
-            $candidateName = $this->normalizeName((string) ($record['full_name'] ?? ''));
-            $candidateNumber = $this->normalizeNumeric((string) ($record['gmc_number'] ?? ''));
-            $matchScore = 0;
-
-            if ($normalizedNumber !== '' && $candidateNumber !== '') {
-                $matchScore += $candidateNumber === $normalizedNumber ? 100 : 0;
-            }
-
-            if ($normalizedName !== '' && $candidateName !== '') {
-                if ($candidateName === $normalizedName) {
-                    $matchScore += 80;
-                } elseif (str_contains($candidateName, $normalizedName) || str_contains($normalizedName, $candidateName)) {
-                    $matchScore += 50;
-                }
-            }
-
-            $score[] = [$matchScore, $record];
-        }
-
-        usort($score, fn (array $a, array $b) => $b[0] <=> $a[0]);
-        $candidate = $score[0][1] ?? null;
-        if (! $candidate) {
-            return null;
-        }
-
-        $highest = $score[0][0] ?? 0;
-        $second = $score[1][0] ?? 0;
-
-        if ($highest > 0 && $second > 0 && $second >= $highest) {
-            $sameNameMatches = array_filter($score, fn (array $entry) => $entry[0] >= $highest);
-            if (count($sameNameMatches) > 1) {
-                return null;
-            }
-        }
-
-        if ($highest <= 0) {
-            return null;
-        }
-
-        return $candidate;
-    }
-
-    private function normalizeName(string $value): string
-    {
-        $value = strtolower(trim($value));
-        $value = preg_replace('/\s+/', ' ', $value) ?? $value;
-        $value = preg_replace('/[^a-z0-9]/', '', $value);
-
-        return (string) $value;
-    }
-
-    private function namesMatch(string $submittedName, string $officialName): bool
-    {
-        $submittedParts = $this->nameParts($submittedName);
-        $officialParts = $this->nameParts($officialName);
-
-        return $submittedParts !== [] && array_diff($submittedParts, $officialParts) === [];
-    }
-
-    private function nameParts(string $value): array
-    {
-        $value = strtolower($value);
-        $value = preg_replace('/[^a-z0-9]+/', ' ', $value) ?? $value;
-        $parts = preg_split('/\s+/', trim($value), -1, PREG_SPLIT_NO_EMPTY);
-
-        return array_values(array_unique($parts ?: []));
     }
 
     private function normalizeNumeric(string $value): string

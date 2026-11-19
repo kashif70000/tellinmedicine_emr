@@ -4,7 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Http\Controllers\Admin\LicenseVerificationController;
-use App\Services\MassachusettsLicenseSource;
+use App\Services\GmcUkVerificationService;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Request as HttpRequest;
 use Illuminate\Support\Facades\Http;
@@ -26,6 +26,7 @@ class AdminLicenseVerificationTest extends TestCase
         $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
 
         config([
+            'doctor_lookup.enabled' => false,
             'uslicensecheck.base_url' => 'https://uslicensecheck.test/api/v1',
             'uslicensecheck.api_key' => 'test-key-not-a-secret',
             'uslicensecheck.supported_states' => ['OH', 'CT', 'CO', 'DE', 'TX', 'IL', 'NH', 'AK', 'WA'],
@@ -33,33 +34,171 @@ class AdminLicenseVerificationTest extends TestCase
         ]);
     }
 
-    public function test_admin_page_lists_massachusetts_and_configured_states_including_kansas(): void
+    public function test_admin_page_lists_all_doctor_license_lookup_states(): void
     {
         $request = HttpRequest::create('/admin/license-verification');
         $request->setUserResolver(fn () => $this->user('admin'));
         $view = app(LicenseVerificationController::class)->index($request);
 
         $this->assertSame('admin.license-verification', $view->name());
-        $this->assertSame([
-            'MA' => 'Massachusetts',
-            'OH' => 'Ohio',
-            'CT' => 'Connecticut',
-            'CO' => 'Colorado',
-            'DE' => 'Delaware',
-            'TX' => 'Texas',
-            'IL' => 'Illinois',
-            'NH' => 'New Hampshire',
-            'AK' => 'Alaska',
-            'WA' => 'Washington',
-            'KS' => 'Kansas',
-            'MT' => 'Montana',
-            'FL' => 'Florida',
-        ], $view->getData()['states']);
+        $this->assertSame(
+            array_map(static fn (array $state): string => $state['name'], config('doctor_lookup.states')),
+            $view->getData()['states']
+        );
 
         $this->actingAs($this->user('admin'))
             ->get(route('admin.license-verification.index'))
             ->assertOk()
-            ->assertSee('<option value="MT">Montana (MT)</option>', false);
+            ->assertSee('<option value="MT">Montana (MT)</option>', false)
+            ->assertSee('<option value="UK">United Kingdom</option>', false)
+            ->assertDontSee('Doctor\'s Full Name')
+            ->assertSee('id="license-number-label">GMC Registration Number', false);
+    }
+
+    public function test_admin_uk_verification_reuses_gmc_service_and_returns_official_physician_information(): void
+    {
+        $officialData = [
+            'full_name' => 'Alice Smith',
+            'gmc_number' => '1234567',
+            'profile_url' => 'https://www.gmc-uk.org/registrants/1234567',
+            'registration_status' => 'Registered',
+            'licence_status' => 'Licensed to practise',
+        ];
+        $this->mock(GmcUkVerificationService::class)
+            ->shouldReceive('verify')
+            ->once()
+            ->with([
+                'gmc_registration_number' => '1234567',
+            ])
+            ->andReturn([
+                'status' => 'verified',
+                'message' => 'The GMC registration record was verified.',
+                'source' => 'Test GMC Register',
+                'official_data' => $officialData,
+            ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+                'license_number' => '1234567',
+            ])
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('status', 'verified')
+            ->assertJsonPath('source', 'Test GMC Register')
+            ->assertJsonPath('official_data.full_name', 'Alice Smith')
+            ->assertJsonPath('official_data.gmc_number', '1234567');
+    }
+
+    public function test_admin_uk_verification_returns_not_found_without_claiming_success(): void
+    {
+        $this->mock(GmcUkVerificationService::class)
+            ->shouldReceive('verify')
+            ->once()
+            ->andReturn([
+                'status' => 'failed',
+                'message' => 'No matching GMC registration record was found.',
+                'source' => 'Test GMC Register',
+                'official_data' => null,
+            ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+                'license_number' => '1234567',
+            ])
+            ->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'failed')
+            ->assertJsonPath('official_data', null);
+    }
+
+    public function test_admin_uk_verification_returns_unavailable_for_manual_review_without_claiming_success(): void
+    {
+        $this->mock(GmcUkVerificationService::class)
+            ->shouldReceive('verify')
+            ->once()
+            ->andReturn([
+                'status' => 'unavailable',
+                'message' => 'GMC registration verification is currently unavailable.',
+                'source' => 'Test GMC Register',
+                'official_data' => null,
+            ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+                'license_number' => '1234567',
+            ])
+            ->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'unavailable')
+            ->assertJsonPath('official_data', null);
+    }
+
+    public function test_admin_uk_manual_review_result_is_not_reported_as_verified(): void
+    {
+        $this->mock(GmcUkVerificationService::class)
+            ->shouldReceive('verify')
+            ->once()
+            ->andReturn([
+                'status' => 'manual_review',
+                'message' => 'The GMC record requires manual review.',
+                'source' => 'Test GMC Register',
+                'official_data' => ['full_name' => 'Alice Smith', 'gmc_number' => '1234567'],
+            ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+                'license_number' => '1234567',
+            ])
+            ->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'manual_review')
+            ->assertJsonPath('official_data.full_name', 'Alice Smith');
+    }
+
+    public function test_admin_uk_verification_requires_a_seven_digit_registration_number(): void
+    {
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['license_number']);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+                'license_number' => '12A4567',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['license_number']);
+    }
+
+    public function test_admin_uk_verification_omits_raw_text_from_result(): void
+    {
+        $this->mock(GmcUkVerificationService::class)
+            ->shouldReceive('verify')
+            ->once()
+            ->andReturn([
+                'status' => 'verified',
+                'message' => 'Verified.',
+                'source' => 'Test GMC Register',
+                'official_data' => [
+                    'gmc_number' => '1234567',
+                    'raw_text' => 'Internal page text that must not be shown.',
+                ],
+            ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'UK',
+                'license_number' => '1234567',
+            ])
+            ->assertOk()
+            ->assertJsonMissingPath('official_data.raw_text');
     }
 
     public function test_non_admin_cannot_access_page_or_verification_endpoint(): void
@@ -81,7 +220,21 @@ class AdminLicenseVerificationTest extends TestCase
 
     public function test_supported_us_state_lookup_returns_official_result_without_writing_doctor_records(): void
     {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
         Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/ohio/search' => Http::response([
+                'success' => true,
+                'data' => [
+                    'license_no' => 'OH123456',
+                    'full_name' => 'Smith, Alice',
+                ],
+            ]),
             self::ENDPOINT => function (Request $request) {
                 return Http::response([
                     'found' => true,
@@ -108,11 +261,103 @@ class AdminLicenseVerificationTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('status', 'verified')
             ->assertJsonPath('official_data.full_name', 'Smith, Alice')
-            ->assertJsonPath('official_data.license_number', 'OH123456');
-        Http::assertSent(fn (Request $request) => $request->data() === [
-            'license_number' => 'OH123456',
-            'source_state' => 'OH',
+            ->assertJsonPath('official_data.license_no', 'OH123456')
+            ->assertJsonPath('source', 'DoctorLicenseLookup');
+        Http::assertSentCount(2);
+        $this->assertSame(
+            [
+                'https://doctorlicenselookup.test/state/ohio',
+                'https://doctorlicenselookup.test/ohio/search',
+            ],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
+    }
+
+    public function test_admin_falls_back_to_state_provider_after_primary_technical_failure(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
         ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response('temporarily unavailable', 503),
+            self::ENDPOINT => Http::response([
+                'found' => true,
+                'license_number' => 'OH123456',
+                'board' => 'Medical Board',
+                'license_type' => 'Physician License',
+                'status' => 'Active',
+                'source_state' => 'OH',
+                'expiry_date' => now()->addYear()->toDateString(),
+                'multiple' => null,
+            ]),
+        ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'US',
+                'state' => 'OH',
+                'license_number' => 'OH123456',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'verified')
+            ->assertJsonPath('source', 'USLicenseCheck');
+        Http::assertSentCount(2);
+        $this->assertSame(
+            ['https://doctorlicenselookup.test/state/ohio', self::ENDPOINT],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
+    }
+
+    public function test_admin_does_not_fall_back_after_primary_not_found_result(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/ohio' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/ohio/search' => Http::response([
+                'success' => false,
+                'no_results' => true,
+            ]),
+            self::ENDPOINT => Http::response(['found' => true]),
+        ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'US',
+                'state' => 'OH',
+                'license_number' => 'missing',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'not_found');
+        Http::assertSentCount(2);
+    }
+
+    public function test_admin_returns_primary_manual_review_when_state_has_no_fallback(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/california' => Http::response('temporarily unavailable', 503),
+            self::ENDPOINT => Http::response(['found' => true]),
+        ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'US',
+                'state' => 'CA',
+                'license_number' => 'CA123456',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'unable_to_verify')
+            ->assertJsonPath('source', 'DoctorLicenseLookup');
+        Http::assertSentCount(1);
     }
 
     public function test_admin_new_hampshire_lookup_uses_the_official_portal(): void
@@ -163,49 +408,58 @@ class AdminLicenseVerificationTest extends TestCase
             && $request->data()['licnumber'] === 'MED-PHYS-LIC-100591');
     }
 
-    public function test_massachusetts_lookup_uses_existing_verifier_inputs_without_writing_records(): void
+    public function test_massachusetts_uses_doctor_license_lookup_without_legacy_inputs_or_fallback(): void
     {
-        $issueDate = now()->subYears(5)->toDateString();
-        $expirationDate = now()->addYear()->toDateString();
-        $this->app->instance(MassachusettsLicenseSource::class, new class($issueDate, $expirationDate) implements MassachusettsLicenseSource {
-            public function __construct(private string $issueDate, private string $expirationDate) {}
-
-            public function find(string $licenseType, string $licenseNumber): ?array
-            {
-                return [
-                    'license_number' => $licenseNumber,
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/massachusetts' => Http::response(
+                '<html><meta name="csrf-token" content="fresh-token"></html>'
+            ),
+            'https://doctorlicenselookup.test/massachusetts/search' => Http::response([
+                'success' => true,
+                'data' => [
+                    'license_no' => 'MA123456',
                     'full_name' => 'Alice Smith',
-                    'license_type' => $licenseType,
-                    'status' => 'Active',
-                    'issue_date' => $this->issueDate,
-                    'expiration_date' => $this->expirationDate,
-                ];
-            }
-
-            public function sourceName(): string
-            {
-                return 'Test Massachusetts source';
-            }
-        });
+                ],
+            ]),
+            self::ENDPOINT => Http::response([
+                'found' => true,
+                'license_number' => 'MA123456',
+                'board' => 'Medical Board',
+                'license_type' => 'Physician License',
+                'status' => 'Active',
+                'source_state' => 'MA',
+                'multiple' => null,
+            ]),
+        ]);
 
         $response = $this->actingAs($this->user('admin'))
             ->postJson(route('admin.license-verification.verify'), [
                 'country' => 'US',
                 'state' => 'MA',
                 'license_number' => 'MA123456',
-                'license_type' => 'Full Physician',
-                'license_issue_date' => $issueDate,
-                'license_expiration_date' => $expirationDate,
             ]);
 
         $response->assertOk()
             ->assertJsonPath('success', true)
             ->assertJsonPath('status', 'verified')
             ->assertJsonPath('official_data.full_name', 'Alice Smith')
-            ->assertJsonPath('official_data.license_number', 'MA123456');
+            ->assertJsonPath('official_data.license_no', 'MA123456')
+            ->assertJsonPath('source', 'DoctorLicenseLookup');
+        Http::assertSentCount(2);
+        $this->assertSame(
+            [
+                'https://doctorlicenselookup.test/state/massachusetts',
+                'https://doctorlicenselookup.test/massachusetts/search',
+            ],
+            Http::recorded()->map(static fn (array $recorded) => $recorded[0]->url())->all()
+        );
     }
 
-    public function test_kansas_is_accepted_and_unconfigured_states_are_rejected(): void
+    public function test_kansas_is_accepted_and_unknown_states_are_rejected(): void
     {
         $this->withoutMiddleware();
         Http::fake();
@@ -221,14 +475,14 @@ class AdminLicenseVerificationTest extends TestCase
         $this->actingAs($this->user('admin'))
             ->postJson(route('admin.license-verification.verify'), [
                 'country' => 'US',
-                'state' => 'CA',
+                'state' => 'XX',
                 'license_number' => 'CA123456',
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('state');
     }
 
-    public function test_massachusetts_requires_its_existing_license_type_and_date_inputs(): void
+    public function test_massachusetts_does_not_require_legacy_license_type_or_date_inputs(): void
     {
         $this->actingAs($this->user('admin'))
             ->postJson(route('admin.license-verification.verify'), [
@@ -236,12 +490,43 @@ class AdminLicenseVerificationTest extends TestCase
                 'state' => 'MA',
                 'license_number' => 'MA123456',
             ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors([
-                'license_type',
-                'license_issue_date',
-                'license_expiration_date',
-            ]);
+            ->assertOk()
+            ->assertJsonPath('source', 'DoctorLicenseLookup');
+    }
+
+    public function test_massachusetts_does_not_fall_back_to_individual_verifiers(): void
+    {
+        config([
+            'doctor_lookup.enabled' => true,
+            'doctor_lookup.base_url' => 'https://doctorlicenselookup.test',
+        ]);
+        Http::fake([
+            'https://doctorlicenselookup.test/state/massachusetts' => Http::response('temporarily unavailable', 503),
+            self::ENDPOINT => Http::response([
+                'found' => true,
+                'license_number' => 'MA123456',
+                'board' => 'Medical Board',
+                'license_type' => 'Physician License',
+                'status' => 'Active',
+                'source_state' => 'MA',
+                'multiple' => null,
+            ]),
+        ]);
+
+        $this->actingAs($this->user('admin'))
+            ->postJson(route('admin.license-verification.verify'), [
+                'country' => 'US',
+                'state' => 'MA',
+                'license_number' => 'MA123456',
+            ])
+            ->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 'unable_to_verify')
+            ->assertJsonPath('source', 'DoctorLicenseLookup');
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request) => $request->method() === 'GET'
+            && $request->url() === 'https://doctorlicenselookup.test/state/massachusetts');
     }
 
     public function test_multiple_consecutive_lookups_return_the_latest_submitted_license(): void

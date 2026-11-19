@@ -7,7 +7,6 @@
     <div class="page-header mb-4">
         <div>
             <h3 class="page-title">License Verification</h3>
-            <p class="text-muted mb-0">Independently verify a physician license using the official licensing source for its country.</p>
         </div>
     </div>
 
@@ -29,6 +28,8 @@
                             <option value="GH">Ghana</option>
                             <option value="UG">Uganda</option>
                             <option value="TZ">Tanzania</option>
+                            <option value="SS">South Sudan</option>
+                            <option value="UK">United Kingdom</option>
                         </select>
                         <div class="invalid-feedback" data-error-for="country"></div>
                     </div>
@@ -43,33 +44,9 @@
                         <div class="invalid-feedback" data-error-for="state"></div>
                     </div>
                     <div class="col-md-4">
-                        <label for="license-number" class="form-label">License Number <span class="text-danger">*</span></label>
+                        <label for="license-number" class="form-label"><span id="license-number-label">License Number</span> <span class="text-danger">*</span></label>
                         <input id="license-number" name="license_number" type="text" class="form-control" maxlength="255" autocomplete="off" required>
                         <div class="invalid-feedback" data-error-for="license_number"></div>
-                    </div>
-                    <div class="col-12 d-none" id="massachusetts-license-fields">
-                        <div class="row g-3">
-                            <div class="col-md-4">
-                                <label for="license-type" class="form-label">License Type <span class="text-danger">*</span></label>
-                                <select id="license-type" name="license_type" class="form-select">
-                                    <option value="">Select physician license type</option>
-                                    <option value="Full Physician">Full Physician</option>
-                                    <option value="Limited Physician">Limited Physician</option>
-                                    <option value="Temporary Physician">Temporary Physician</option>
-                                </select>
-                                <div class="invalid-feedback" data-error-for="license_type"></div>
-                            </div>
-                            <div class="col-md-4">
-                                <label for="license-issue-date" class="form-label">Latest License Issue Date <span class="text-danger">*</span></label>
-                                <input id="license-issue-date" name="license_issue_date" type="date" class="form-control">
-                                <div class="invalid-feedback" data-error-for="license_issue_date"></div>
-                            </div>
-                            <div class="col-md-4">
-                                <label for="license-expiration-date" class="form-label">License Expiration Date <span class="text-danger">*</span></label>
-                                <input id="license-expiration-date" name="license_expiration_date" type="date" class="form-control">
-                                <div class="invalid-feedback" data-error-for="license_expiration_date"></div>
-                            </div>
-                        </div>
                     </div>
                     <div class="col-12 d-flex align-items-center gap-3 mt-4">
                         <button id="verify-license-button" type="submit" class="btn btn-success">
@@ -95,7 +72,8 @@
     const country = document.getElementById('license-country');
     const state = document.getElementById('license-state');
     const stateGroup = document.getElementById('license-state-group');
-    const massachusettsFields = document.getElementById('massachusetts-license-fields');
+    const licenseNumber = document.getElementById('license-number');
+    const licenseNumberLabel = document.getElementById('license-number-label');
     const button = document.getElementById('verify-license-button');
     const spinner = document.getElementById('verify-license-spinner');
     const icon = document.getElementById('verify-license-icon');
@@ -120,7 +98,7 @@
         const isGhana = country.value === 'GH';
         const isUganda = country.value === 'UG';
         const isTanzania = country.value === 'TZ';
-        const isMassachusetts = isUnitedStates && state.value === 'MA';
+        const isUk = country.value === 'UK';
 
         stateGroup.classList.toggle('d-none', !isUnitedStates);
         state.required = isUnitedStates;
@@ -128,14 +106,14 @@
         if (!isUnitedStates) {
             state.value = '';
         }
-
-        massachusettsFields.classList.toggle('d-none', !isMassachusetts);
-        massachusettsFields.querySelectorAll('[name]').forEach((input) => {
-            input.required = isMassachusetts;
-            if (!isMassachusetts) {
-                input.value = '';
-            }
-        });
+        licenseNumber.inputMode = isUk ? 'numeric' : 'text';
+        if (isUk) {
+            licenseNumber.setAttribute('pattern', '[0-9]{7}');
+        } else {
+            licenseNumber.removeAttribute('pattern');
+        }
+        licenseNumber.maxLength = isUk ? 7 : 255;
+        licenseNumberLabel.textContent = isUk ? 'GMC Registration Number' : 'License Number';
 
         if (isIndia || isGhana || isUganda || isTanzania) {
             state.required = false;
@@ -189,11 +167,12 @@
             'apirecord',
             'checkedat',
             'registryverifiedat',
-            'sourceurl'
+            'sourceurl',
+            'rawtext'
         ].includes(normalized) || normalized.endsWith('metaid');
     }
 
-    function appendDataRows(container, data, prefix = '', depth = 0) {
+    function appendDataRows(container, data, prefix = '', depth = 0, seenNameValues = new Set()) {
         if (!data || typeof data !== 'object' || depth > 5) {
             return;
         }
@@ -213,12 +192,24 @@
                         addDataRow(container, label, value.filter((item) => item !== null).join(', '));
                     }
                 } else {
-                    appendDataRows(container, value, label, depth + 1);
+                    appendDataRows(container, value, label, depth + 1, seenNameValues);
                 }
                 return;
             }
 
-            addDataRow(container, label, typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value));
+            const normalizedKey = String(key).toLowerCase();
+            const duplicateNameKeys = ['full_name', 'name', 'practitioner_name', 'doctor_name', 'physician_name'];
+            const valueText = typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value).trim();
+
+            if (duplicateNameKeys.includes(normalizedKey) && valueText) {
+                const valueKey = valueText.toLowerCase();
+                if (seenNameValues.has(valueKey)) {
+                    return;
+                }
+                seenNameValues.add(valueKey);
+            }
+
+            addDataRow(container, label, valueText);
         });
     }
 
